@@ -6,7 +6,8 @@
     "npm": "10.x"
   },
   "scripts": {
-    "dev": "next dev -p 3010",
+    "dev": "HOSTNAME=127.0.0.1 next dev -p 3010",
+    "dev:turbo": "HOSTNAME=127.0.0.1 next dev -p 3010 --turbo",
     "build": "next build",
     "start": "next start -p ${PORT:-3010}",
     "start:prod": "next start"

@@ -5,10 +5,8 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   
-  // Fix workspace root warning - set turbopack root at top level (not under experimental)
-  turbopack: {
-    root: __dirname,
-  },
+  // NOTE: Do NOT set turbopack config here - it forces Turbopack mode
+  // Use --turbo flag explicitly in package.json scripts if you want Turbopack
 };
 
 module.exports = nextConfig;
