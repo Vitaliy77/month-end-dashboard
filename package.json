@@ -1,0 +1,20 @@
+{
+  "name": "month-end-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Month-End Dashboard for QuickBooks Online",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "npm --prefix api run dev",
+    "dev:web": "npm --prefix web run dev -- -p 3010",
+    "install:all": "npm install && npm --prefix api install && npm --prefix web install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "workspaces": [
+    "api",
+    "web"
+  ]
+}
+

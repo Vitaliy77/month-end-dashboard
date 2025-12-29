@@ -13,8 +13,49 @@ An improved version of the Month-End Checker application for reviewing QuickBook
 ## Architecture
 
 - **Backend API**: Express.js with TypeScript (Port 8081)
-- **Frontend Web**: Next.js with React and TypeScript (Port 3001)
+- **Frontend Web**: Next.js with React and TypeScript (Port 3010)
 - **Database**: PostgreSQL (all tables use PostgreSQL)
+
+## Quick Start
+
+### One-Command Setup
+
+```bash
+# Install all dependencies
+npm install
+
+# Copy environment files
+cp api/.env.example api/.env
+cp web/.env.example web/.env.local
+
+# Edit api/.env with your database and QBO credentials
+# web/.env.local should work as-is for local development
+
+# Start both services
+npm run dev
+```
+
+This will start:
+- API server on `http://localhost:8081`
+- Web app on `http://localhost:3010`
+
+### Verify Setup
+
+```bash
+# Check API health
+curl -i http://localhost:8081/api/health
+
+# Check API orgs endpoint
+curl -i http://localhost:8081/api/orgs
+
+# Check web server
+curl -I http://localhost:3010
+```
+
+Or run the diagnostic script:
+```bash
+./scripts/doctor.sh
+```
 
 ## Setup Instructions
 
@@ -35,35 +76,44 @@ createdb month_end_dashboard
 # CREATE DATABASE month_end_dashboard;
 ```
 
-### 2. Backend API Setup
+### 2. Environment Configuration
 
+**API (`api/.env`):**
 ```bash
-cd api
-npm install
-cp .env.example .env
-# Edit .env and add your configuration
+cp api/.env.example api/.env
+# Edit api/.env and add your DATABASE_URL, QBO_CLIENT_ID, QBO_CLIENT_SECRET, etc.
+```
+
+**Web (`web/.env.local`):**
+```bash
+cp web/.env.example web/.env.local
+# web/.env.local should work as-is (points to http://localhost:8081/api)
+```
+
+### 3. Start Services
+
+**Option A: Start both together (recommended):**
+```bash
 npm run dev
 ```
 
-The API will start on `http://localhost:8081`
+**Option B: Start separately:**
+```bash
+# Terminal 1: API
+npm run dev:api
 
-**Required Environment Variables:**
+# Terminal 2: Web
+npm run dev:web
+```
+
+The API will start on `http://localhost:8081`  
+The web app will start on `http://localhost:3010`
+
+**Required Environment Variables (API):**
 - `DATABASE_URL`: PostgreSQL connection string
 - `QBO_CLIENT_ID`: QuickBooks OAuth client ID
 - `QBO_CLIENT_SECRET`: QuickBooks OAuth client secret
 - `QBO_REDIRECT_URI`: Must match Intuit Developer Portal exactly
-
-### 3. Frontend Web Setup
-
-```bash
-cd web
-npm install
-cp .env.example .env.local
-# Edit .env.local if needed (defaults should work for local dev)
-npm run dev
-```
-
-The web app will start on `http://localhost:3001`
 
 ### 4. QuickBooks OAuth Setup
 
@@ -85,16 +135,18 @@ The web app will start on `http://localhost:3001`
 
 ### Running Both Services
 
-In separate terminals:
+**From repo root (recommended):**
+```bash
+npm run dev
+```
 
+**Or separately:**
 ```bash
 # Terminal 1: API
-cd api
-npm run dev
+npm run dev:api
 
 # Terminal 2: Web
-cd web
-npm run dev
+npm run dev:web
 ```
 
 ### Building for Production

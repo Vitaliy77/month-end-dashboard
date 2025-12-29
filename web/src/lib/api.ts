@@ -62,36 +62,80 @@ function stripTrailingSlash(s: string) {
 }
 
 const API_BASE = (() => {
+  // In development, allow empty string (same-origin) or use localhost fallback
   // In production, NEXT_PUBLIC_API_BASE_URL must be set
-  // Fallback to localhost only for local development
   const full =
     process.env.NEXT_PUBLIC_API_BASE_URL ||
     process.env.NEXT_PUBLIC_API_BASE ||
     (typeof window === "undefined" ? "http://127.0.0.1:8081" : ""); // Server-side fallback only
 
+  const isProduction = process.env.NODE_ENV === "production";
+  
   if (!full) {
-    console.error("NEXT_PUBLIC_API_BASE_URL must be set in production");
+    if (isProduction) {
+      throw new Error("NEXT_PUBLIC_API_BASE_URL must be set in production");
+    } else {
+      console.warn(
+        "[api] NEXT_PUBLIC_API_BASE_URL not set. Using same-origin (empty string). " +
+        "Set NEXT_PUBLIC_API_BASE_URL in .env.local for development."
+      );
+    }
   }
 
   const prefix = process.env.NEXT_PUBLIC_API_PREFIX || "/api";
   return `${stripTrailingSlash(full)}${prefix.startsWith("/") ? "" : "/"}${prefix}`;
 })();
 
-async function asJson(resp: Response) {
+async function asJson(resp: Response, requestUrl?: string) {
+  const contentType = resp.headers.get("content-type") || "";
+  const isHtml = contentType.includes("text/html");
+  
   const text = await resp.text();
   let json: any = null;
+  
+  // If response is HTML (likely a 404 page), provide a clear error
+  if (isHtml && !resp.ok) {
+    const url = requestUrl || resp.url;
+    throw new Error(
+      `API returned HTML (likely hitting Next.js 404). Check NEXT_PUBLIC_API_BASE_URL and API server.\n` +
+      `Request URL: ${url}\n` +
+      `Status: ${resp.status} ${resp.statusText}\n` +
+      `Content-Type: ${contentType}`
+    );
+  }
+  
   try {
     json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
+  } catch (e) {
+    // If parsing fails and it's not HTML, include the raw text
+    if (!isHtml) {
+      json = { raw: text, parseError: String(e) };
+    } else {
+      // Already handled HTML case above
+      throw new Error(
+        `API returned HTML instead of JSON. Check NEXT_PUBLIC_API_BASE_URL and API server.\n` +
+        `Request URL: ${requestUrl || resp.url}\n` +
+        `Status: ${resp.status} ${resp.statusText}`
+      );
+    }
   }
 
   if (!resp.ok) {
+    const url = requestUrl || resp.url;
     const msg =
       json?.error ||
       json?.message ||
       (typeof json?.raw === "string" ? json.raw : null) ||
       `Request failed (${resp.status})`;
+    
+    // Log the request URL for debugging
+    console.error(`[api] Request failed: ${url}`, {
+      status: resp.status,
+      statusText: resp.statusText,
+      contentType,
+      error: msg,
+    });
+    
     throw new Error(msg);
   }
 
@@ -102,18 +146,20 @@ async function asJson(resp: Response) {
 // Orgs
 // -------------------------
 export async function createOrg(args: { name: string }) {
-  const resp = await fetch(`${API_BASE}/orgs`, {
+  const url = `${API_BASE}/orgs`;
+  const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify(args),
   });
-  return asJson(resp);
+  return asJson(resp, url);
 }
 
 export async function listOrgs(): Promise<{ ok: boolean; orgs: Org[] }> {
-  const resp = await fetch(`${API_BASE}/orgs`, { cache: "no-store" });
-  return asJson(resp);
+  const url = `${API_BASE}/orgs`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export function qboConnectUrl(orgId: string) {
@@ -124,21 +170,23 @@ export function qboConnectUrl(orgId: string) {
 // Rules (per org)
 // -------------------------
 export async function getRulesForOrg(orgId: string): Promise<{ ok: boolean; orgId: string; rules: Rule[] }> {
-  const resp = await fetch(`${API_BASE}/orgs/${encodeURIComponent(orgId)}/rules`, { cache: "no-store" });
-  return asJson(resp);
+  const url = `${API_BASE}/orgs/${encodeURIComponent(orgId)}/rules`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export async function saveRulesForOrg(
   orgId: string,
   rules: Rule[]
 ): Promise<{ ok: boolean; orgId: string; rulesSaved: number }> {
-  const resp = await fetch(`${API_BASE}/orgs/${encodeURIComponent(orgId)}/rules`, {
+  const url = `${API_BASE}/orgs/${encodeURIComponent(orgId)}/rules`;
+  const resp = await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify({ rules }),
   });
-  return asJson(resp);
+  return asJson(resp, url);
 }
 
 // -------------------------
@@ -151,58 +199,43 @@ export async function runMonthEndQbo(args: {
   // Optional: run with draft rules (override) without persisting
   rules?: Rule[];
 }) {
-  const resp = await fetch(`${API_BASE}/runs/month-end/qbo`, {
+  const url = `${API_BASE}/runs/month-end/qbo`;
+  const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify(args),
   });
-  return asJson(resp);
+  return asJson(resp, url);
 }
 
 // -------------------------
 // Reports
 // -------------------------
 export async function loadPnl(orgId: string, from: string, to: string): Promise<any> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/pnl?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(
-      to
-    )}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/pnl?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export async function loadTrialBalance(orgId: string, from: string, to: string): Promise<any> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/tb?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(
-      to
-    )}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/tb?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 // ✅ NEW: Balance Sheet
 export async function loadBalanceSheet(orgId: string, from: string, to: string): Promise<any> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/bs?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(
-      to
-    )}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/bs?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 // ✅ NEW: Cash Flow
 export async function loadCashFlow(orgId: string, from: string, to: string): Promise<any> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/cf?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(
-      to
-    )}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/cf?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 // -------------------------
@@ -229,13 +262,9 @@ export async function loadTrialBalanceSeries(
   from: string,
   to: string
 ): Promise<SeriesResponse> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/tb/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(
-      from
-    )}&to=${encodeURIComponent(to)}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/tb/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export async function loadBalanceSheetSeries(
@@ -243,23 +272,15 @@ export async function loadBalanceSheetSeries(
   from: string,
   to: string
 ): Promise<SeriesResponse> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/bs/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(
-      from
-    )}&to=${encodeURIComponent(to)}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/bs/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export async function loadPnlSeries(orgId: string, from: string, to: string): Promise<SeriesResponse> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/pnl/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(
-      from
-    )}&to=${encodeURIComponent(to)}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/pnl/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export async function loadCashFlowSeries(
@@ -267,13 +288,9 @@ export async function loadCashFlowSeries(
   from: string,
   to: string
 ): Promise<SeriesResponse> {
-  const resp = await fetch(
-    `${API_BASE}/qbo/cf/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(
-      from
-    )}&to=${encodeURIComponent(to)}`,
-    { cache: "no-store" }
-  );
-  return asJson(resp);
+  const url = `${API_BASE}/qbo/cf/series?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 // -------------------------
@@ -297,21 +314,21 @@ export type AccountOwner = {
 export async function getAccountOwnersForOrg(
   orgId: string
 ): Promise<{ ok: boolean; owners: AccountOwner[] }> {
-  const resp = await fetch(`${API_BASE}/orgs/${encodeURIComponent(orgId)}/account-owners`, {
-    cache: "no-store",
-  });
-  return asJson(resp);
+  const url = `${API_BASE}/orgs/${encodeURIComponent(orgId)}/account-owners`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
 }
 
 export async function saveAccountOwnersForOrg(
   orgId: string,
   owners: AccountOwner[]
 ): Promise<{ ok: boolean; owners: AccountOwner[] }> {
-  const resp = await fetch(`${API_BASE}/orgs/${encodeURIComponent(orgId)}/account-owners`, {
+  const url = `${API_BASE}/orgs/${encodeURIComponent(orgId)}/account-owners`;
+  const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify({ owners }),
   });
-  return asJson(resp);
+  return asJson(resp, url);
 }
