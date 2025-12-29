@@ -4,9 +4,14 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-
-  // Remove the old experimental turbo key (Next 16 warns about it)
-  // experimental: { turbo: false },
+  
+  // Fix workspace root warning
+  experimental: {
+    turbopack: {
+      root: __dirname,
+    },
+  },
 };
 
 module.exports = nextConfig;
+
