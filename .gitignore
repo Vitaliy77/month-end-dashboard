@@ -1,0 +1,60 @@
+# OS / editor
+.DS_Store
+.idea
+.vscode
+*.swp
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Node
+node_modules/
+**/node_modules/
+**/node_modules */
+
+# Next.js
+web/.next/
+web/out/
+web/.turbo/
+.next/
+out/
+.turbo/
+
+# Builds
+api/dist/
+api/*.tsbuildinfo
+dist/
+build/
+*.tsbuildinfo
+
+# SQLite / local data
+api/*.db
+api/*.db-wal
+api/*.db-shm
+api/*.sqlite
+api/*.sqlite3
+api/data/
+api/.data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# Misc
+coverage/
+
+# macOS
+.DS_Store
+
+# deps
+node_modules/
+web/node_modules 2/
+api/.env

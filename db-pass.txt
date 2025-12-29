@@ -1,0 +1,9 @@
+db pass: month-end-checker2025
+qbo: Month-end-checker2025!
+
+Client ID:
+ABpmJVO0CXE0WdAbscvZuZXw6tM4SW8cVECbvHlaC3qGvLhqPF
+Client secret:
+O5bFAXAqzKzR8A5WBMQqsdP1IrqdHgGndA4108yl
+
+ngrok: 36xJh1FHnB6IWUDKA9NRwj3vt8K_5ryE5cq8Ev7cixBA8ELkK

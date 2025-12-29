@@ -1,0 +1,427 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Reset + full height */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+/* Default theme: Clean slate look (as requested) */
+body {
+  background: rgb(248 250 252); /* slate-50 */
+  color: rgb(15 23 42); /* slate-900 */
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+    Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* Optional: Hide notebook markup completely when not wanted */
+body.clean-notebook .notebook-plane,
+body.clean-notebook .notebook-static,
+.notebook-plane,
+.notebook-static {
+  display: none !important;
+}
+
+/* ========================
+   Notebook Theme (activated by removing .clean-notebook class)
+   ======================== */
+:root {
+  --ink: #111827;
+  --paper: #fdfcf7;
+  --line-light: #d1d5db;
+  --brand-blue: #2563eb;
+  --border: rgba(15, 23, 42, 0.12);
+  --shadow: 0 16px 28px rgba(0, 0, 0, 0.06);
+  --glass: rgba(255, 255, 255, 0.80);
+  --glass-2: rgba(255, 255, 255, 0.72);
+  --muted: rgba(15, 23, 42, 0.62);
+}
+
+/* Activate notebook background + colors */
+body:not(.clean-notebook) {
+  color: var(--ink);
+  background: #eef2f7;
+}
+
+/* ===== Notebook background ===== */
+body:not(.clean-notebook) .notebook-plane {
+  position: fixed;
+  bottom: -8vh;
+  right: -8vw;
+  width: 150vw;
+  height: 150vh;
+  background-color: var(--paper);
+  background-image: linear-gradient(#e5e7eb 1px, transparent 1px);
+  background-size: 100% 28px;
+  transform-origin: bottom right;
+  transform: rotateX(15deg) rotateZ(-15deg);
+  box-shadow: 0 40px 90px rgba(0, 0, 0, 0.20);
+  border-radius: 12px;
+  z-index: -1;
+  pointer-events: none;
+}
+
+body:not(.clean-notebook) .notebook-plane::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 8%;
+  width: 2px;
+  background: rgba(239, 68, 68, 0.55);
+  pointer-events: none;
+}
+
+body:not(.clean-notebook) .notebook-plane::after {
+  content: "";
+  position: absolute;
+  left: 4%;
+  top: 14%;
+  width: 10px;
+  height: 68%;
+  background-image: radial-gradient(circle, #d1d5db 0, #d1d5db 2px, transparent 2px);
+  background-size: 12px 40px;
+  background-repeat: repeat-y;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* ===== Layout ===== */
+.page-wrap {
+  max-width: 92rem;
+  margin: 0 auto;
+  padding-left: 0.15rem;
+  padding-right: 0.75rem;
+  position: relative;
+  z-index: 1;
+}
+@media (min-width: 640px) {
+  .page-wrap {
+    padding-left: 0.25rem;
+    padding-right: 1rem;
+  }
+}
+/* Back-compat */
+.container {
+  max-width: 92rem;
+  margin: 0 auto;
+  padding-left: 0.25rem;
+  padding-right: 1rem;
+  position: relative;
+  z-index: 1;
+}
+
+/* ===== Top actions ===== */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding: 12px 0 10px;
+  backdrop-filter: blur(10px);
+  background: linear-gradient(to bottom, rgba(238, 242, 247, 0.92), rgba(238, 242, 247, 0.72));
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+.topbar-inner {
+  max-width: 92rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+.topbar-actions {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+  overflow: visible;
+  isolation: isolate;
+}
+@media (max-width: 980px) {
+  .topbar-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 520px) {
+  .topbar-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.topbar-meta { margin-top: 10px; }
+.topbar-title {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: rgba(15, 23, 42, 0.95);
+  margin: 0;
+  font-size: 1.9rem;
+  line-height: 1.08;
+}
+.topbar-steps {
+  margin-top: 0.35rem;
+  font-size: 1.02rem;
+  line-height: 1.55;
+  color: rgba(15, 23, 42, 0.74);
+}
+
+/* ===== Two columns ===== */
+.two-col {
+  display: grid;
+  align-items: start;
+  row-gap: 1.75rem;
+  column-gap: 5mm;
+}
+@media (min-width: 768px) {
+  .two-col {
+    grid-template-columns: minmax(660px, 1fr) minmax(520px, 1fr);
+  }
+}
+
+/* ===== Cards ===== */
+.exec-card {
+  position: relative;
+  border-radius: 22px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.80);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.06);
+  padding: 2rem;
+  overflow: hidden;
+  backdrop-filter: blur(6px);
+  z-index: 1;
+}
+.exec-card::before {
+  content: "";
+  position: absolute;
+  inset: -70px;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(37, 99, 235, 0.10), transparent 42%),
+    radial-gradient(circle at 90% 35%, rgba(15, 23, 42, 0.06), transparent 38%);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.card {
+  position: relative;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.80);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, 0.05);
+  padding: 1.25rem;
+  overflow: hidden;
+  backdrop-filter: blur(6px);
+  z-index: 1;
+}
+
+/* Text styles */
+.kicker {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.62);
+}
+.title {
+  position: relative;
+  z-index: 1;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: rgba(15, 23, 42, 0.95);
+  margin-top: 0.9rem;
+  font-size: 2.35rem;
+  line-height: 1.08;
+}
+.lead {
+  position: relative;
+  z-index: 1;
+  margin-top: 1rem;
+  font-size: 1.10rem;
+  line-height: 1.75;
+  color: rgba(15, 23, 42, 0.72);
+}
+
+/* Steps, form, buttons — unchanged from your original (kept all) */
+.steps { /* ... same as before ... */ }
+.step { /* ... */ }
+/* ... all the rest of your original styles (form-grid, field, btn, topbar-btn, etc.) ... */
+
+/* Paste the rest of your original CSS below this line — everything from .steps onward is unchanged */
+.steps {
+  position: relative;
+  z-index: 1;
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0.85rem;
+}
+.step {
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.95rem 1rem;
+}
+.step .st {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.60);
+}
+.step .sd {
+  margin-top: 0.35rem;
+  font-size: 1.02rem;
+  line-height: 1.55;
+  color: rgba(15, 23, 42, 0.74);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+}
+@media (max-width: 760px) {
+  .form-grid { grid-template-columns: 1fr; }
+}
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.60);
+  margin-bottom: 8px;
+}
+.field input {
+  width: 100%;
+  height: 44px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 0 12px;
+  font-size: 14px;
+  outline: none;
+}
+.field input:focus {
+  border-color: rgba(37, 99, 235, 0.50);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+.btn {
+  width: 100%;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(15, 23, 42, 0.92);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-size: 13px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transform: translateZ(0) scale(1);
+  transform-origin: center;
+  will-change: transform;
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.12);
+  transition: transform 140ms ease, background 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.btn:hover {
+  background: rgba(15, 23, 42, 1);
+  transform: translateZ(0) scale(1.07);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.16);
+  position: relative;
+  z-index: 2;
+}
+.btn:active { transform: translateZ(0) scale(1.03); opacity: 0.96; }
+.btn:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 2px;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.btn.btn-ghost {
+  background: rgba(255, 255, 255, 0.82);
+  color: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.06);
+}
+.btn.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.92);
+  transform: translateZ(0) scale(1.05);
+  box-shadow: 0 14px 24px rgba(0, 0, 0, 0.10);
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn { transition: none; }
+  .btn:hover, .btn:active { transform: none; }
+}
+@media (max-width: 980px) {
+  .two-col {
+    grid-template-columns: 1fr;
+    row-gap: 1.75rem;
+    column-gap: 0;
+  }
+}
+/* Topbar buttons */
+.topbar-btn {
+  width: 100%;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(15, 23, 42, 0.92);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-size: 13px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transform: translateZ(0) scale(1);
+  transform-origin: center;
+  will-change: transform;
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.12);
+  transition: transform 140ms ease, background 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.topbar-btn:hover {
+  background: rgba(15, 23, 42, 1);
+  transform: translateZ(0) scale(1.07);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.16);
+  position: relative;
+  z-index: 2;
+}
+.topbar-btn:active {
+  transform: translateZ(0) scale(1.03);
+  opacity: 0.96;
+}
+.topbar-btn:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 2px;
+}
+button.topbar-btn:disabled,
+a.topbar-btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+a.topbar-btn,
+a.topbar-btn:visited {
+  color: #fff;
+  text-decoration: none;
+}
