@@ -5,11 +5,9 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   
-  // Fix workspace root warning
-  experimental: {
-    turbopack: {
-      root: __dirname,
-    },
+  // Fix workspace root warning - set turbopack root at top level (not under experimental)
+  turbopack: {
+    root: __dirname,
   },
 };
 
