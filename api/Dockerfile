@@ -5,6 +5,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# verify express is installed (fail build if missing)
+RUN node -p "require.resolve('express')"
+
 # copy source
 COPY . .
 
