@@ -4,8 +4,8 @@ import { q } from "./db.js";
 export type MonthEndRun = {
   id: string;
   org_id: string;
-  from: string;
-  to: string;
+  from_date: string;
+  to_date: string;
   net_income: number | null;
   findings_json: string; // JSON string of Finding[]
   rule_engine_version?: string;
