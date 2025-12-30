@@ -10,6 +10,8 @@ import { monthBuckets, priorDay, type MonthBucket } from "./monthBuckets.js";
 // === Rules system ===
 import { getRulesForOrg, saveRulesForOrg } from "./rulesStore.js";
 import { evaluateRules, RULE_ENGINE_VERSION } from "./ruleEngine.js";
+// === Runs system ===
+import { saveRun, getRun, listRuns } from "./runsStore.js";
 // === Account Owners system ===
 import {
   getAccountOwnersForOrg,
@@ -49,6 +51,99 @@ routes.get("/debug/env", (_req, res) => {
     WEB_BASE_URL: ENV.WEB_BASE_URL,
     QBO_BASE_URL: ENV.QBO_BASE_URL,
     QBO_ENV: ENV.QBO_ENV,
+  });
+});
+
+// Debug: list all registered routes (dev only)
+routes.get("/debug/routes", (_req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ ok: false, error: "Not found" });
+  }
+  
+  const routeList: Array<{ method: string; path: string }> = [];
+  
+  // Walk through the router stack to extract routes
+  routes.stack.forEach((layer: any) => {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase());
+      methods.forEach(method => {
+        routeList.push({
+          method,
+          path: layer.route.path,
+        });
+      });
+    } else if (layer.name === "router") {
+      // Handle nested routers
+      layer.handle.stack?.forEach((nestedLayer: any) => {
+        if (nestedLayer.route) {
+          const methods = Object.keys(nestedLayer.route.methods).map(m => m.toUpperCase());
+          methods.forEach(method => {
+            routeList.push({
+              method,
+              path: nestedLayer.route.path,
+            });
+          });
+        }
+      });
+    }
+  });
+  
+  res.json({
+    ok: true,
+    routes: routeList.sort((a, b) => a.path.localeCompare(b.path)),
+    count: routeList.length,
+  });
+});
+
+// Debug: QBO configuration (dev-only, no secrets)
+routes.get("/debug/qbo", (_req, res) => {
+  // Only enable in non-production
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ ok: false, error: "Not found" });
+  }
+
+  const clientId = ENV.QBO_CLIENT_ID || "";
+  const clientSecret = ENV.QBO_CLIENT_SECRET || "";
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(`${clientId}:${clientSecret}`)
+    .digest("hex")
+    .slice(0, 8);
+
+  res.json({
+    qbo_env: ENV.QBO_ENV,
+    redirect_uri: ENV.QBO_REDIRECT_URI,
+    client_id_len: clientId.length,
+    client_id_last6: clientId.length >= 6 ? clientId.slice(-6) : "N/A",
+    client_secret_len: clientSecret.length,
+    client_secret_last4: clientSecret.length >= 4 ? clientSecret.slice(-4) : "N/A",
+    fingerprint8: fingerprint,
+  });
+});
+
+// Debug: QBO credentials verification (dev-only, no secrets)
+routes.get("/debug/qbo-creds", (_req, res) => {
+  // Only enable in non-production
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ ok: false, error: "Not found" });
+  }
+
+  const clientId = ENV.QBO_CLIENT_ID || "";
+  const clientSecret = ENV.QBO_CLIENT_SECRET || "";
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(`${clientId}:${clientSecret}`)
+    .digest("hex")
+    .slice(0, 8);
+
+  res.json({
+    qbo_env: ENV.QBO_ENV,
+    redirect_uri: ENV.QBO_REDIRECT_URI,
+    client_id_length: clientId.length,
+    client_id_last6: clientId.length >= 6 ? clientId.slice(-6) : "N/A",
+    client_secret_length: clientSecret.length,
+    client_secret_last2: clientSecret.length >= 2 ? clientSecret.slice(-2) : "N/A",
+    fingerprint_sha256_first8: fingerprint,
   });
 });
 
@@ -288,6 +383,52 @@ routes.get("/qbo/pnl", async (req, res) => {
   }
 });
 
+// GET endpoint to retrieve last run for orgId+period
+routes.get("/runs/month-end/qbo", async (req, res) => {
+  try {
+    const orgId = String(req.query.orgId || "");
+    const from = String(req.query.from || "");
+    const to = String(req.query.to || "");
+    if (!orgId || !from || !to) {
+      return res.status(400).json({ ok: false, error: "Missing orgId/from/to" });
+    }
+
+    const run = await getRun(orgId, from, to);
+    if (!run) {
+      return res.json({
+        ok: true,
+        found: false,
+        orgId,
+        from,
+        to,
+      });
+    }
+
+    // Parse findings JSON
+    let findings: any[] = [];
+    try {
+      findings = JSON.parse(run.findings_json);
+    } catch {
+      findings = [];
+    }
+
+    return res.json({
+      ok: true,
+      found: true,
+      runId: run.id,
+      orgId: run.org_id,
+      from: run.from_date,
+      to: run.to_date,
+      netIncome: run.net_income,
+      findings,
+      ruleEngineVersion: run.rule_engine_version,
+      createdAt: run.created_at,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 routes.get("/qbo/tb", async (req, res) => {
   try {
     const orgId = String(req.query.orgId || "");
@@ -302,7 +443,22 @@ routes.get("/qbo/tb", async (req, res) => {
       end_date: to,
     });
 
-    return res.json({ ok: true, orgId, from, to, tb });
+    // Count rows for debugging
+    const rows = tb?.Rows?.Row || [];
+    const rowCount = Array.isArray(rows) ? rows.length : 0;
+    const rowsWithColData = Array.isArray(rows)
+      ? rows.filter((r: any) => Array.isArray(r?.ColData)).length
+      : 0;
+
+    return res.json({
+      ok: true,
+      orgId,
+      from,
+      to,
+      tb,
+      count: rowCount,
+      countWithColData: rowsWithColData,
+    });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
@@ -840,10 +996,30 @@ routes.post("/runs/month-end/qbo", async (req, res) => {
 
     const findings = evaluateRules({ pnl, pnlPrior, rules, from, to, accountOwners });
     const netIncome = findNetIncome(pnl);
+    const runId = crypto.randomUUID();
+
+    // Save run to database
+    try {
+      await saveRun({
+        id: runId,
+        orgId,
+        from,
+        to,
+        netIncome,
+        findings,
+        ruleEngineVersion: RULE_ENGINE_VERSION,
+      });
+    } catch (saveError: any) {
+      console.error("Failed to save run:", saveError);
+      // Non-fatal: continue even if save fails
+    }
 
     return res.json({
       ok: true,
-      runId: crypto.randomUUID(),
+      runId,
+      orgId,
+      from,
+      to,
       netIncome,
       netIncomeValue: netIncome, // alias for frontend compatibility
       findings,

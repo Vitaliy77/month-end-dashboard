@@ -5,8 +5,12 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   
-  // NOTE: Do NOT set turbopack config here - it forces Turbopack mode
-  // Use --turbo flag explicitly in package.json scripts if you want Turbopack
+  // Ensure server output (not static export)
+  // output: undefined means default server mode (not "export")
+  // This allows next start to work properly
+  
+  // Force Webpack by not enabling experimental.turbopack
+  // Turbopack is only enabled via --turbo flag or NEXT_DISABLE_TURBOPACK=0
 };
 
 module.exports = nextConfig;

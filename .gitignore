@@ -8,6 +8,7 @@
 .env
 .env.*
 !.env.example
+!**/.env.example
 
 # Logs
 npm-debug.log*
@@ -23,9 +24,11 @@ node_modules/
 
 # Next.js
 web/.next/
+web/.next */
 web/out/
 web/.turbo/
 .next/
+.next */
 out/
 .turbo/
 

@@ -61,7 +61,7 @@ function stripTrailingSlash(s: string) {
   return s.replace(/\/$/, "");
 }
 
-const API_BASE = (() => {
+export const API_BASE = (() => {
   // In development, allow empty string (same-origin) or use localhost fallback
   // In production, NEXT_PUBLIC_API_BASE_URL must be set
   const full =
@@ -83,10 +83,73 @@ const API_BASE = (() => {
   }
 
   const prefix = process.env.NEXT_PUBLIC_API_PREFIX || "/api";
-  return `${stripTrailingSlash(full)}${prefix.startsWith("/") ? "" : "/"}${prefix}`;
+  const base = stripTrailingSlash(full);
+  // If base already ends with /api, don't add prefix again
+  if (base.endsWith("/api")) {
+    return base;
+  }
+  return `${base}${prefix.startsWith("/") ? "" : "/"}${prefix}`;
 })();
 
-async function asJson(resp: Response, requestUrl?: string) {
+// Fetch wrapper with timeout (8s) and retry (max 1)
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = 8000,
+  maxRetries: number = 1
+): Promise<Response> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error: any) {
+      lastError = error;
+      
+      // If it's an abort (timeout) or connection error, retry once
+      if (attempt < maxRetries && (error.name === "AbortError" || error.message?.includes("fetch"))) {
+        await new Promise(resolve => setTimeout(resolve, 500)); // Brief delay before retry
+        continue;
+      }
+      
+      // If connection refused or network error, throw a clear error
+      if (error.message?.includes("fetch") || error.message?.includes("Failed to fetch") || error.name === "TypeError") {
+        throw new Error("API offline");
+      }
+      
+      throw error;
+    }
+  }
+  
+  throw lastError || new Error("Fetch failed after retries");
+}
+
+// Wrapper that catches connection errors and returns { ok: false, error: "API offline" }
+async function safeFetch<T = any>(
+  url: string,
+  options: RequestInit = {}
+): Promise<T | { ok: false; error: string }> {
+  try {
+    const resp = await fetchWithTimeout(url, options);
+    return await asJson<T>(resp, url);
+  } catch (error: any) {
+    if (error.message === "API offline" || error.message?.includes("Failed to fetch")) {
+      return { ok: false, error: "API offline" } as T;
+    }
+    throw error;
+  }
+}
+
+async function asJson<T = any>(resp: Response, requestUrl?: string): Promise<T> {
   const contentType = resp.headers.get("content-type") || "";
   const isHtml = contentType.includes("text/html");
   
@@ -147,19 +210,37 @@ async function asJson(resp: Response, requestUrl?: string) {
 // -------------------------
 export async function createOrg(args: { name: string }) {
   const url = `${API_BASE}/orgs`;
-  const resp = await fetch(url, {
+  const result = await safeFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify(args),
   });
-  return asJson(resp, url);
+  if (!result || (result as any).ok === false) {
+    throw new Error((result as any)?.error || "API offline");
+  }
+  return result;
 }
 
 export async function listOrgs(): Promise<{ ok: boolean; orgs: Org[] }> {
   const url = `${API_BASE}/orgs`;
-  const resp = await fetch(url, { cache: "no-store" });
-  return asJson(resp, url);
+  const result = await safeFetch<{ ok: boolean; orgs: Org[] }>(url, { cache: "no-store" });
+  if (!result || (result as any).ok === false) {
+    return { ok: false, orgs: [] };
+  }
+  return result;
+}
+
+// Check API health (for status indicator)
+export async function checkApiHealth(): Promise<{ ok: boolean; online: boolean }> {
+  try {
+    const url = `${API_BASE}/health`;
+    const resp = await fetchWithTimeout(url, { cache: "no-store" }, 3000, 0); // 3s timeout, no retry for health check
+    const json = await asJson<{ ok: boolean }>(resp, url);
+    return { ok: json?.ok === true, online: true };
+  } catch {
+    return { ok: false, online: false };
+  }
 }
 
 export function qboConnectUrl(orgId: string) {
@@ -200,13 +281,47 @@ export async function runMonthEndQbo(args: {
   rules?: Rule[];
 }) {
   const url = `${API_BASE}/runs/month-end/qbo`;
-  const resp = await fetch(url, {
+  const result = await safeFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify(args),
   });
-  return asJson(resp, url);
+  if (!result || (result as any).ok === false) {
+    return { ok: false, error: (result as any)?.error || "API offline", findings: [], netIncome: null };
+  }
+  return result;
+}
+
+export async function getMonthEndRun(orgId: string, from: string, to: string): Promise<{
+  ok: boolean;
+  found: boolean;
+  runId?: string;
+  orgId?: string;
+  from?: string;
+  to?: string;
+  netIncome?: number | null;
+  findings?: Finding[];
+  ruleEngineVersion?: string;
+  createdAt?: string;
+}> {
+  const url = `${API_BASE}/runs/month-end/qbo?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const result = await safeFetch<{
+    ok: boolean;
+    found: boolean;
+    runId?: string;
+    orgId?: string;
+    from?: string;
+    to?: string;
+    netIncome?: number | null;
+    findings?: Finding[];
+    ruleEngineVersion?: string;
+    createdAt?: string;
+  }>(url, { cache: "no-store" });
+  if (!result || (result as any).ok === false) {
+    return { ok: false, found: false };
+  }
+  return result;
 }
 
 // -------------------------

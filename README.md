@@ -122,6 +122,64 @@ The web app will start on `http://localhost:3010`
 3. Add redirect URI: `http://localhost:8081/api/auth/qbo/callback` (for sandbox)
 4. Copy Client ID and Client Secret to your `.env` file
 
+**Troubleshooting OAuth Errors:**
+
+If you encounter `401 invalid_client` errors during token exchange, this is almost always a **Client Secret mismatch**. Follow these steps:
+
+1. **Verify Current Configuration:**
+   ```bash
+   # Check QBO credentials (dev-only endpoint)
+   curl http://localhost:8080/api/debug/qbo-creds
+   
+   # Or run the verification script
+   ./scripts/verify-qbo.sh
+   ```
+
+2. **Fix Client Secret Mismatch (Most Common Issue):**
+   
+   **Step 1:** Go to [Intuit Developer Portal](https://developer.intuit.com/)
+   
+   **Step 2:** Navigate to your app → **Keys & OAuth** section
+   
+   **Step 3:** Make sure you're on the **Development** tab (not Production)
+   
+   **Step 4:** Click **"Regenerate"** next to the Client Secret
+   
+   **Step 5:** Copy the **entire** new Client Secret (it will be ~40 characters for sandbox)
+   
+   **Step 6:** Open `api/.env` and update the line:
+   ```
+   QBO_CLIENT_SECRET=<paste the new secret here>
+   ```
+   **Important:** 
+   - Copy the entire secret, no spaces or line breaks
+   - Make sure there are no quotes around the value
+   - The line should be exactly: `QBO_CLIENT_SECRET=...` (no spaces around `=`)
+   
+   **Step 7:** Restart the API:
+   ```bash
+   # Stop the API (Ctrl+C if running in foreground)
+   # Then restart:
+   cd api
+   npm run dev
+   ```
+   
+   **Step 8:** Verify the new secret is loaded:
+   ```bash
+   curl http://localhost:8080/api/debug/qbo-creds
+   ```
+   Check that `fingerprint_sha256_first8` has changed (confirming new secret is loaded)
+   
+   **Step 9:** Retry the OAuth flow:
+   - Click "Connect QBO" in the web app
+   - Complete the authorization
+   - Token exchange should now return 200 (not 401)
+
+3. **Verify Redirect URI:**
+   - The redirect URI in `api/.env` must match exactly (including protocol, host, port, and path) with what's configured in Intuit Developer Portal
+   - Common issues: `localhost` vs `127.0.0.1`, missing port, trailing slashes
+   - For development: `http://localhost:8080/api/auth/qbo/callback`
+
 ## Key Improvements from Original
 
 1. **Unified Database**: All data now uses PostgreSQL instead of mixing PostgreSQL and SQLite
@@ -178,6 +236,7 @@ npm start
 - `GET /api/qbo/tb` - Get Trial Balance report
 - `GET /api/qbo/bs` - Get Balance Sheet report
 - `GET /api/qbo/cf` - Get Cash Flow report
+- `GET /api/debug/qbo` - QBO configuration debug (dev-only, requires `NODE_ENV !== 'production'`)
 
 ## Database Schema
 

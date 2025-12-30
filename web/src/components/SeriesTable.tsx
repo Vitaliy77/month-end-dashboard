@@ -28,12 +28,14 @@ type SeriesTableProps = {
   reportType: "tb" | "bs" | "pnl" | "cf";
   from: string;
   to: string;
+  balanceCheck?: Record<string, number>; // colKey -> diff (Assets - Liabilities - Equity)
 };
 
-export function SeriesTable({ data, reportType, from, to }: SeriesTableProps) {
+export function SeriesTable({ data, reportType, from, to, balanceCheck }: SeriesTableProps) {
   const { columns, rows, months } = data;
 
   const isBalanceReport = reportType === "tb" || reportType === "bs";
+  const showBalanceCheck = reportType === "bs" && balanceCheck;
 
   const columnHeaders = useMemo(() => {
     return columns.map((col) => {
@@ -65,17 +67,17 @@ export function SeriesTable({ data, reportType, from, to }: SeriesTableProps) {
 
   return (
     <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
-      <table className="min-w-[980px] w-full text-sm">
+      <table className="min-w-[980px] w-full text-sm leading-snug">
         <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10">
           <tr>
-            <th className="px-4 py-3 font-semibold text-slate-700 text-left min-w-[360px] sticky left-0 bg-slate-50 z-20">
+            <th className="px-4 py-1.5 font-semibold text-slate-700 text-left min-w-[360px] sticky left-0 bg-slate-50 z-20">
               Account Name
             </th>
             {columnHeaders.map((col, idx) => (
               <th
                 key={col.key}
                 className={[
-                  "px-4 py-3 font-semibold text-slate-700 text-right min-w-[140px]",
+                  "px-4 py-1.5 font-semibold text-slate-700 text-right min-w-[140px] tabular-nums",
                   col.sticky && idx === 0 ? "sticky left-[360px] bg-slate-50 z-20" : "",
                   col.sticky && idx === columnHeaders.length - 1 ? "sticky right-0 bg-slate-50 z-20" : "",
                 ].join(" ")}
@@ -96,7 +98,7 @@ export function SeriesTable({ data, reportType, from, to }: SeriesTableProps) {
           ) : (
             rows.map((row, i) => (
               <tr key={row.account_id || `${row.account_name}-${i}`} className="border-b border-slate-100 hover:bg-slate-50/60">
-                <td className="px-4 py-2.5 text-slate-900 sticky left-0 bg-white z-10">
+                <td className="px-4 py-0.5 text-slate-900 sticky left-0 bg-white z-10">
                   {row.account_id && (
                     <span className="text-[11px] tabular-nums rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-slate-600 mr-2">
                       {row.account_id}
@@ -114,7 +116,7 @@ export function SeriesTable({ data, reportType, from, to }: SeriesTableProps) {
                     <td
                       key={col.key}
                       className={[
-                        "px-4 py-2.5 text-right tabular-nums text-slate-900",
+                        "px-4 py-0.5 text-right tabular-nums text-slate-900",
                         isStart && idx === 0 ? "sticky left-[360px] bg-white z-10" : "",
                         isEnd && idx === columnHeaders.length - 1 ? "sticky right-0 bg-white z-10" : "",
                         isBalanceReport && (isStart || isEnd) ? "font-semibold" : "",
@@ -132,14 +134,14 @@ export function SeriesTable({ data, reportType, from, to }: SeriesTableProps) {
         {rows.length > 0 && (
           <tfoot className="sticky bottom-0 bg-slate-100 border-t-2 border-slate-300">
             <tr>
-              <td className="px-4 py-3 font-bold text-slate-900 sticky left-0 bg-slate-100 z-20">Total</td>
+              <td className="px-4 py-1 font-bold text-slate-900 sticky left-0 bg-slate-100 z-20">Total</td>
               {columnHeaders.map((col, idx) => {
                 const total = rows.reduce((sum, row) => sum + (row.values[col.key] ?? 0), 0);
                 return (
                   <td
                     key={col.key}
                     className={[
-                      "px-4 py-3 text-right tabular-nums font-bold text-slate-900",
+                      "px-4 py-1 text-right tabular-nums font-bold text-slate-900",
                       col.sticky && idx === 0 ? "sticky left-[360px] bg-slate-100 z-20" : "",
                       col.sticky && idx === columnHeaders.length - 1 ? "sticky right-0 bg-slate-100 z-20" : "",
                     ].join(" ")}
@@ -149,6 +151,31 @@ export function SeriesTable({ data, reportType, from, to }: SeriesTableProps) {
                 );
               })}
             </tr>
+            {showBalanceCheck && (
+              <tr>
+                <td className="px-4 py-1 font-bold text-slate-900 sticky left-0 bg-slate-100 z-20">
+                  Out of Balance (Assets - Liabilities - Equity)
+                </td>
+                {columnHeaders.map((col, idx) => {
+                  const diff = balanceCheck?.[col.key] ?? null;
+                  const isOutOfBalance = diff != null && Math.abs(diff) > 0.01;
+                  return (
+                    <td
+                      key={col.key}
+                      className={[
+                        "px-4 py-1 text-right tabular-nums font-bold",
+                        isOutOfBalance ? "text-red-700" : "text-green-700",
+                        col.sticky && idx === 0 ? "sticky left-[360px] bg-slate-100 z-20" : "",
+                        col.sticky && idx === columnHeaders.length - 1 ? "sticky right-0 bg-slate-100 z-20" : "",
+                      ].join(" ")}
+                    >
+                      {diff != null ? formatMoney(diff) : "—"}
+                      {isOutOfBalance && <span className="ml-2">⚠️</span>}
+                    </td>
+                  );
+                })}
+              </tr>
+            )}
           </tfoot>
         )}
       </table>

@@ -6,6 +6,8 @@ import { ui } from "@/components/ui";
 import { loadTrialBalance, loadTrialBalanceSeries, type SeriesResponse } from "@/lib/api";
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
 import { SeriesTable } from "@/components/SeriesTable";
+import { REPORT_TABLE_STYLES } from "@/components/ReportTable";
+import { ReportHeader } from "@/components/ReportHeader";
 
 type TbRow = {
   accountId?: string;
@@ -53,20 +55,51 @@ export default function TrialBalancePage() {
   const [status, setStatus] = useState<string>("—");
 
   const [query, setQuery] = useState("");
-  const [rows, setRows] = useState<TbRow[]>([]);
   const [raw, setRaw] = useState<any>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [seriesData, setSeriesData] = useState<SeriesResponse | null>(null);
   const [useSeries, setUseSeries] = useState(false);
 
+  // Canonical rows from API: tb?.Rows?.Row ?? []
+  const rawRows = useMemo(() => {
+    if (!raw?.tb) return [];
+    return raw.tb.Rows?.Row ?? [];
+  }, [raw]);
+
+  // Compute accounts directly from rawRows (no hierarchy flattening)
+  const accounts = useMemo(() => {
+    return rawRows
+      .filter((r: any) => Array.isArray(r?.ColData) && r.ColData.length >= 1)
+      .map((r: any) => ({
+        accountId: r.ColData[0]?.id ?? "",
+        accountName: String(r.ColData[0]?.value ?? "").trim(),
+        debit: String(r.ColData[1]?.value ?? ""),
+        credit: String(r.ColData[2]?.value ?? ""),
+        beginning: String(r.ColData[3]?.value ?? ""),
+        ending: String(r.ColData[4]?.value ?? ""),
+      }))
+      .filter((a: any) => a.accountName && a.accountName.toUpperCase() !== "TOTAL");
+  }, [rawRows]);
+
+  // Filtered accounts based on search query
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) => {
-      const hay = `${r.accountId ?? ""} ${r.accountName ?? ""}`.toLowerCase();
+    if (!q) return accounts;
+    return accounts.filter((a) => {
+      const hay = `${a.accountId ?? ""} ${a.accountName ?? ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [rows, query]);
+  }, [accounts, query]);
+
+  // Compute totals from filtered accounts
+  const totals = useMemo(() => {
+    const totalBeginning = filtered.reduce((sum, a) => sum + (toNumber(a.beginning) ?? 0), 0);
+    const totalDebit = filtered.reduce((sum, a) => sum + (toNumber(a.debit) ?? 0), 0);
+    const totalCredit = filtered.reduce((sum, a) => sum + (toNumber(a.credit) ?? 0), 0);
+    const totalEnding = filtered.reduce((sum, a) => sum + (toNumber(a.ending) ?? 0), 0);
+    const balance = totalDebit - totalCredit;
+    return { totalBeginning, totalDebit, totalCredit, totalEnding, balance };
+  }, [filtered]);
 
   // Check if range spans multiple months
   const spansMultipleMonths = useMemo(() => {
@@ -83,72 +116,27 @@ export default function TrialBalancePage() {
 
     try {
       setStatus("Loading TB...");
-      setRows([]);
       setRaw(null);
       setSeriesData(null);
 
       const fromIso = toIsoDate(from);
       const toIso = toIsoDate(to);
 
-      // Use series endpoint if spanning multiple months
-      if (spansMultipleMonths) {
-        const series = await loadTrialBalanceSeries(orgId, fromIso, toIso);
-        setSeriesData(series);
-        setUseSeries(true);
-        setStatus(`TB loaded ✅ (${series.months.length} month(s))`);
-      } else {
-        const json = await loadTrialBalance(orgId, fromIso, toIso);
-        setRaw(json);
-        setUseSeries(false);
-
-      const qboRows = json?.tb?.Rows?.Row ?? [];
-      const normalized: TbRow[] = Array.isArray(qboRows)
-        ? qboRows
-            .filter((r: any) => Array.isArray(r?.ColData))
-            .map((r: any) => {
-              const cols = r.ColData;
-
-              const name = cols?.[0]?.value ?? "";
-              const accountId = cols?.[0]?.id ?? "";
-
-              const c1 = cols?.[1]?.value ?? "";
-              const c2 = cols?.[2]?.value ?? "";
-              const c3 = cols?.[3]?.value ?? "";
-              const c4 = cols?.[4]?.value ?? "";
-              const c5 = cols?.[5]?.value ?? "";
-
-              const nums = [c1, c2, c3, c4, c5].map(toNumber);
-
-              const debit = toNumber(c1);
-              const credit = toNumber(c2);
-
-              const numericPositions = nums
-                .map((v, i) => ({ v, i }))
-                .filter((x) => x.v != null);
-
-              const beginning = numericPositions.length >= 3 ? numericPositions[0].v : null;
-              const ending =
-                numericPositions.length >= 3 ? numericPositions[numericPositions.length - 1].v : null;
-
-              const possibleType =
-                [c1, c2, c3, c4, c5].find((x) => x && toNumber(x) == null) ?? "";
-
-              return {
-                accountId,
-                accountName: name,
-                accountType: possibleType || undefined,
-                beginning,
-                debit: debit ?? null,
-                credit: credit ?? null,
-                ending,
-              };
-            })
-            .filter((r: any) => (r.accountName || "").toUpperCase() !== "TOTAL")
-        : [];
-
-        setRows(normalized);
-        setStatus("TB loaded ✅");
-      }
+      // Always use flat TB endpoint (tb.Rows.Row structure) - NO hierarchy flattening
+      const json = await loadTrialBalance(orgId, fromIso, toIso);
+      setRaw(json);
+      setUseSeries(false);
+      
+      // Accounts are computed via useMemo from raw, so just update status
+      const rawRows = json?.tb?.Rows?.Row ?? [];
+      const accountsCount = rawRows
+        .filter((r: any) => Array.isArray(r?.ColData) && r.ColData.length >= 1)
+        .filter((r: any) => {
+          const name = String(r.ColData[0]?.value ?? "").trim().toUpperCase();
+          return name && name !== "TOTAL";
+        }).length;
+      
+      setStatus(`TB loaded ✅ (${accountsCount} account(s))`);
     } catch (e: any) {
       setStatus(`Error: ${e?.message || String(e)}`);
     }
@@ -159,6 +147,7 @@ export default function TrialBalancePage() {
     d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().split("T")[0];
   }
+
 
   // Auto-load on open and whenever org/period changes
   useEffect(() => {
@@ -174,54 +163,43 @@ export default function TrialBalancePage() {
       
 
       <main className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-6 space-y-4">
-        <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-6">
-          <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">Trial Balance</div>
-          <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">TB Report</div>
-
-          <div className="mt-2 text-sm text-slate-600">
-            orgId: <span className="font-semibold text-slate-900">{orgId || "—"}</span>
-            {orgName ? (
-              <>
-                {" "}
-                • <span className="font-semibold text-slate-900">{orgName}</span>
-              </>
-            ) : null}
-            {" • "}Period: <span className="font-semibold text-slate-900">{from || "—"}</span> →{" "}
-            <span className="font-semibold text-slate-900">{to || "—"}</span>
-          </div>
-
-          <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap items-start">
-            <button
-              className={`${ui.btn} ${ui.btnGhost}`}
-              onClick={() => setShowRaw((v) => !v)}
-              disabled={!raw}
-              title={!raw ? "Load the TB first" : ""}
-            >
-              {showRaw ? "Hide raw JSON" : "Show raw JSON"}
-            </button>
-
-            <div className="min-w-[280px]">
-              <label className="block text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                Search accounts
-              </label>
-              <input
-                className={inputCls}
-                placeholder="Type account id or name…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <div className="mt-2 text-xs text-slate-600">
-                Showing <span className="font-semibold text-slate-900">{filtered.length}</span> of{" "}
-                <span className="font-semibold text-slate-900">{rows.length}</span>
+        <ReportHeader
+          title="TB"
+          orgLine={`orgId: ${orgId || "—"}${orgName ? ` • ${orgName}` : ""} • Period: ${from || "—"} → ${to || "—"}`}
+          controls={
+            <>
+              <button
+                className={`${ui.btn} ${ui.btnGhost}`}
+                onClick={() => setShowRaw((v) => !v)}
+                disabled={!raw}
+                title={!raw ? "Load the TB first" : ""}
+              >
+                {showRaw ? "Hide raw JSON" : "Show raw JSON"}
+              </button>
+              <div className="min-w-[280px]">
+                <label className="block text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
+                  Search accounts
+                </label>
+                <input
+                  className={inputCls}
+                  placeholder="Type account id or name…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+                <div className="mt-2 text-xs text-slate-600">
+                  Showing <span className="font-semibold text-slate-900">{filtered.length}</span> of{" "}
+                  <span className="font-semibold text-slate-900">{accounts.length}</span> account(s)
+                </div>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-          <div className="text-sm font-semibold text-slate-900">Status</div>
-          <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{status}</div>
-        </div>
+            </>
+          }
+          statusText={status || "—"}
+          debugText={
+            accounts.length > 0
+              ? `Debug: rawRows=${rawRows.length} • accounts=${accounts.length} • filtered=${filtered.length} • First: ${accounts.slice(0, 3).map((a: any) => a.accountName).join(", ")}`
+              : undefined
+          }
+        />
 
         {showRaw && raw && (
           <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
@@ -241,41 +219,58 @@ export default function TrialBalancePage() {
                 </div>
                 <SeriesTable data={seriesData} reportType="tb" from={from} to={to} />
               </div>
-            ) : rows.length === 0 ? (
+            ) : accounts.length === 0 ? (
               <div className="text-sm text-slate-600">No balances returned for this period.</div>
             ) : (
-              <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
-                <table className="min-w-[980px] w-full text-sm">
-                  <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
-                    <tr className="text-left">
-                      <th className="px-4 py-3 font-semibold text-slate-700 min-w-[140px]">Account ID</th>
-                      <th className="px-4 py-3 font-semibold text-slate-700 min-w-[360px]">Account Name</th>
-                      <th className="px-4 py-3 font-semibold text-slate-700 min-w-[160px]">Type</th>
-                      <th className="px-4 py-3 font-semibold text-slate-700 text-right min-w-[140px]">Beginning</th>
-                      <th className="px-4 py-3 font-semibold text-slate-700 text-right min-w-[140px]">Debit</th>
-                      <th className="px-4 py-3 font-semibold text-slate-700 text-right min-w-[140px]">Credit</th>
-                      <th className="px-4 py-3 font-semibold text-slate-700 text-right min-w-[140px]">Ending</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {filtered.map((r, i) => (
-                      <tr
-                        key={r.accountId || `${r.accountName}-${i}`}
-                        className="border-b border-slate-100 hover:bg-slate-50/60"
-                      >
-                        <td className="px-4 py-2.5 text-slate-700 tabular-nums">{r.accountId || "—"}</td>
-                        <td className="px-4 py-2.5 text-slate-900">{r.accountName || "—"}</td>
-                        <td className="px-4 py-2.5 text-slate-600">{r.accountType || "—"}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-900">{fmt(r.beginning)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-900">{fmt(r.debit)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-900">{fmt(r.credit)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-900">{fmt(r.ending)}</td>
+              <div className={REPORT_TABLE_STYLES.container}>
+                  <table className={REPORT_TABLE_STYLES.table}>
+                    <thead className={REPORT_TABLE_STYLES.thead}>
+                      <tr>
+                        <th className={`${REPORT_TABLE_STYLES.th} min-w-[140px]`}>Account ID</th>
+                        <th className={`${REPORT_TABLE_STYLES.th} min-w-[360px]`}>Account Name</th>
+                        <th className={`${REPORT_TABLE_STYLES.thNumeric} min-w-[140px]`}>Beginning</th>
+                        <th className={`${REPORT_TABLE_STYLES.thNumeric} min-w-[140px]`}>Debit</th>
+                        <th className={`${REPORT_TABLE_STYLES.thNumeric} min-w-[140px]`}>Credit</th>
+                        <th className={`${REPORT_TABLE_STYLES.thNumeric} min-w-[140px]`}>Ending</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {filtered.map((a, i) => (
+                        <tr key={a.accountId || `${a.accountName}-${i}`} className={REPORT_TABLE_STYLES.tr}>
+                          <td className={`${REPORT_TABLE_STYLES.td} tabular-nums`}>{a.accountId || "—"}</td>
+                          <td className={REPORT_TABLE_STYLES.tdAccount}>{a.accountName || "—"}</td>
+                          <td className={REPORT_TABLE_STYLES.tdNumeric}>{fmt(toNumber(a.beginning))}</td>
+                          <td className={REPORT_TABLE_STYLES.tdNumeric}>{fmt(toNumber(a.debit))}</td>
+                          <td className={REPORT_TABLE_STYLES.tdNumeric}>{fmt(toNumber(a.credit))}</td>
+                          <td className={REPORT_TABLE_STYLES.tdNumeric}>{fmt(toNumber(a.ending))}</td>
+                        </tr>
+                      ))}
+                      {/* Total row */}
+                      <tr className={`${REPORT_TABLE_STYLES.trTotal} border-t-2`}>
+                        <td className={REPORT_TABLE_STYLES.td} colSpan={2}>
+                          <span className="font-bold">TOTAL</span>
+                        </td>
+                        <td className={REPORT_TABLE_STYLES.tdTotal}>{fmt(totals.totalBeginning)}</td>
+                        <td className={REPORT_TABLE_STYLES.tdTotal}>{fmt(totals.totalDebit)}</td>
+                        <td className={REPORT_TABLE_STYLES.tdTotal}>{fmt(totals.totalCredit)}</td>
+                        <td className={REPORT_TABLE_STYLES.tdTotal}>{fmt(totals.totalEnding)}</td>
+                      </tr>
+                      {/* Balance check row */}
+                      <tr className={Math.abs(totals.balance) < 0.01 ? "bg-green-50" : "bg-red-50"}>
+                        <td className={REPORT_TABLE_STYLES.td} colSpan={2}>
+                          <span className="text-xs font-semibold">
+                            Balance Check (Debits - Credits):
+                          </span>
+                        </td>
+                        <td className={REPORT_TABLE_STYLES.td} colSpan={4}>
+                          <span className={`text-xs font-bold ${Math.abs(totals.balance) < 0.01 ? "text-green-700" : "text-red-700"}`}>
+                            {fmt(totals.balance)} {Math.abs(totals.balance) < 0.01 ? "✅ Balanced" : "⚠️ Not Balanced"}
+                          </span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
             )}
           </div>
         )}
@@ -283,3 +278,4 @@ export default function TrialBalancePage() {
     </div>
   );
 }
+

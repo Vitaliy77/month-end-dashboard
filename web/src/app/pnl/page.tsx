@@ -6,6 +6,10 @@ import { ui } from "@/components/ui";
 import { loadPnl, loadPnlSeries, type SeriesResponse } from "@/lib/api";
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
 import { SeriesTable } from "@/components/SeriesTable";
+import { flattenQboRows } from "@/lib/qboFlatten";
+import { buildHierarchy } from "@/lib/hierarchy";
+import { HierarchicalReportTable } from "@/components/HierarchicalReportTable";
+import { ReportHeader } from "@/components/ReportHeader";
 
 type Col = { ColTitle?: string; ColType?: string; MetaData?: any[] };
 type ColData = { value?: string; id?: string };
@@ -256,6 +260,7 @@ export default function PnlPage() {
   const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(new Set());
   const [seriesData, setSeriesData] = useState<SeriesResponse | null>(null);
   const [useSeries, setUseSeries] = useState(false);
+  const [showGrouped, setShowGrouped] = useState(true);
 
   const pnl = raw?.pnl;
 
@@ -269,6 +274,22 @@ export default function PnlPage() {
     const top = pnl?.Rows?.Row || [];
     return Array.isArray(top) ? top : [];
   }, [pnl]);
+
+  // Flatten QBO rows to extract paths and values
+  const flatRows = useMemo(() => {
+    if (!pnl || rows.length === 0) return [];
+    return flattenQboRows(rows, columns.slice(1)); // Skip first column (Account)
+  }, [pnl, rows, columns]);
+
+  // Build hierarchy from flat rows
+  const hierarchyTree = useMemo(() => {
+    if (flatRows.length === 0) return null;
+    return buildHierarchy(flatRows, {
+      pathAccessor: (row) => row.path,
+      valueAccessor: (row, colKey) => row.values[colKey] ?? null,
+      columns: columns.slice(1), // Skip first column
+    });
+  }, [flatRows, columns]);
 
   // Check if range spans multiple months
   const spansMultipleMonths = useMemo(() => {
@@ -288,6 +309,37 @@ export default function PnlPage() {
       return next;
     });
   };
+
+  // Extract table rendering to avoid deeply nested JSX
+  function renderTable() {
+    if (rows.length === 0) {
+      return <div className="text-sm text-slate-700">No rows returned.</div>;
+    }
+    if (!hierarchyTree) {
+      return <div className="text-sm text-slate-700">Building hierarchy...</div>;
+    }
+    return (
+      <HierarchicalReportTable
+        tree={hierarchyTree}
+        columns={columns}
+        renderValue={(node, colKey) => {
+          const val = node.values?.[colKey];
+          return val != null ? money(String(val)) : "—";
+        }}
+        formatMoney={(val) => (val != null ? money(String(val)) : "—")}
+        showGrouped={showGrouped}
+        onToggleGroup={(key) => {
+          setCollapsedKeys((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          });
+        }}
+        collapsedGroups={collapsedKeys}
+      />
+    );
+  }
 
   async function loadPnlAuto() {
     if (!orgId || !from || !to) return;
@@ -325,43 +377,39 @@ export default function PnlPage() {
       
 
       <main className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-6 space-y-4">
-        <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-6">
-          <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">Profit &amp; Loss</div>
-          <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">P&amp;L Report</div>
-          <div className="mt-2 text-sm text-slate-600">
-            orgId: <span className="font-semibold text-slate-900">{orgId || "—"}</span>
-            {orgName ? (
-              <>
-                {" "}
-                • <span className="font-semibold text-slate-900">{orgName}</span>
-              </>
-            ) : null}
-            {" • "}Period: <span className="font-semibold text-slate-900">{from || "—"}</span> →{" "}
-            <span className="font-semibold text-slate-900">{to || "—"}</span>
-          </div>
-
-          <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap items-start">
-            <button
-              className={`${ui.btn} ${ui.btnGhost}`}
-              onClick={() => setShowRaw((v) => !v)}
-              disabled={!raw}
-              title={!raw ? "Load the P&L first" : ""}
-            >
-              {showRaw ? "Hide raw JSON" : "Show raw JSON"}
-            </button>
-
-            {raw?.reportUrl && (
-              <a className={ui.linkBtn} href={raw.reportUrl} target="_blank" rel="noreferrer">
-                Open QBO report →
-              </a>
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-          <div className="text-sm font-semibold text-slate-900">Status</div>
-          <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{status}</div>
-        </div>
+        <ReportHeader
+          title="P&L"
+          orgLine={`orgId: ${orgId || "—"}${orgName ? ` • ${orgName}` : ""} • Period: ${from || "—"} → ${to || "—"}`}
+          controls={
+            <>
+              <button
+                className={`${ui.btn} ${ui.btnGhost}`}
+                onClick={() => setShowRaw((v) => !v)}
+                disabled={!raw}
+                title={!raw ? "Load the P&L first" : ""}
+              >
+                {showRaw ? "Hide raw JSON" : "Show raw JSON"}
+              </button>
+              {!useSeries && raw && hierarchyTree && (
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showGrouped}
+                    onChange={(e) => setShowGrouped(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-slate-700">Show grouped view</span>
+                </label>
+              )}
+              {raw?.reportUrl && (
+                <a className={ui.linkBtn} href={raw.reportUrl} target="_blank" rel="noreferrer">
+                  Open QBO report →
+                </a>
+              )}
+            </>
+          }
+          statusText={status || "—"}
+        />
 
         {showRaw && raw && (
           <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
@@ -391,11 +439,7 @@ export default function PnlPage() {
                   </div>
                 </div>
 
-                {rows.length === 0 ? (
-                  <div className="text-sm text-slate-700">No rows returned.</div>
-                ) : (
-                  <PnlTable columns={columns} rows={rows} collapsed={collapsedKeys} toggleCollapsed={toggleCollapsed} />
-                )}
+                {renderTable()}
               </>
             )}
           </div>

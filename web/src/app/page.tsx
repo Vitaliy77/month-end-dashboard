@@ -8,16 +8,20 @@ import {
   listOrgs,
   qboConnectUrl,
   runMonthEndQbo,
+  getMonthEndRun,
   getRulesForOrg,
   saveRulesForOrg,
   getAccountOwnersForOrg,
   saveAccountOwnersForOrg,
+  checkApiHealth,
+  API_BASE,
   type Finding,
   type Org,
   type Rule,
   type RuleSeverity,
   type AccountOwner,
 } from "@/lib/api";
+import { resolveOwnerForFinding } from "@/lib/ownerResolver";
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
 
 type LeftTab = "setup" | "rules" | "account-owners";
@@ -165,6 +169,7 @@ export default function HomePage() {
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [netIncomeValue, setNetIncomeValue] = useState<number | null>(null);
+  const [apiOnline, setApiOnline] = useState<boolean>(true);
 
   // ---- UI ----
   const [openFindingId, setOpenFindingId] = useState<string | null>(null);
@@ -311,6 +316,69 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, hasOrgId]);
 
+  // Check API health periodically (dev-only indicator)
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    
+    let cancelled = false;
+    const checkHealth = async () => {
+      const health = await checkApiHealth();
+      if (!cancelled) {
+        setApiOnline(health.online);
+      }
+    };
+    
+    checkHealth();
+    const interval = setInterval(checkHealth, 10000); // Check every 10s
+    
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Load last run for orgId+period on mount and when org/period changes
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!hasOrgId || !from || !to) {
+        if (!cancelled) {
+          setFindings([]);
+          setNetIncomeValue(null);
+        }
+        return;
+      }
+      try {
+        const run = await getMonthEndRun(orgId, from, to);
+        if (!cancelled) {
+          if (run.found && run.findings) {
+            setFindings(asArray<Finding>(run.findings));
+            if (typeof run.netIncome === "number") {
+              setNetIncomeValue(run.netIncome);
+            }
+            setStatus(`Loaded last run for ${from} → ${to} ✅`);
+          } else {
+            setFindings([]);
+            setNetIncomeValue(null);
+            setStatus("No previous run found for this period.");
+          }
+        }
+      } catch (e: any) {
+        console.error("Failed to load last run:", e);
+        if (!cancelled) {
+          // Non-fatal: just don't show previous results
+          setFindings([]);
+          setNetIncomeValue(null);
+        }
+      }
+    })();
+    
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, from, to, hasOrgId]);
+
   async function onCreateOrg() {
     try {
       setStatus("Creating org...");
@@ -342,11 +410,13 @@ export default function HomePage() {
     }
     try {
       setRulesSaving(true);
-      await saveRulesForOrg(orgId, rules);
+      const result = await saveRulesForOrg(orgId, rules);
+      // Update saved ref to clear dirty state
       savedRulesRef.current = rules;
+      lastSavedHashRef.current = stableRulesSnapshot(rules);
       localStorage.setItem(RULES_STORAGE_KEY, JSON.stringify(rules));
       setRulesSource("api");
-      setStatus(`Rules saved ✅ (${rules.length} rule(s))`);
+      setStatus(`Rules saved ✅ (${result?.rulesSaved ?? rules.length} rule(s))`);
     } catch (e: any) {
       setStatus(`Save rules failed: ${e?.message || String(e)}`);
     } finally {
@@ -592,6 +662,10 @@ export default function HomePage() {
 
       const r: any = await runMonthEndQbo(payload);
 
+      if (!r?.ok) {
+        throw new Error(r?.error || "API offline");
+      }
+
       const net =
         r?.netIncome ??
         r?.netIncomeValue ??
@@ -603,7 +677,18 @@ export default function HomePage() {
       const list = r?.findings ?? r?.data?.findings ?? [];
       setFindings(asArray<Finding>(list));
 
-      setStatus("Month-end completed ✅");
+      // After successful run, immediately re-fetch to ensure persistence
+      try {
+        const savedRun = await getMonthEndRun(orgId, from, to);
+        if (savedRun.found) {
+          setStatus("Month-end completed ✅ (saved)");
+        } else {
+          setStatus("Month-end completed ✅ (not found after save)");
+        }
+      } catch (e: any) {
+        console.error("Failed to verify run save:", e);
+        setStatus("Month-end completed ✅ (save verification failed)");
+      }
     } catch (e: any) {
       setStatus(`Month-end failed: ${e?.message || String(e)}`);
     }
@@ -678,8 +763,20 @@ export default function HomePage() {
 
         {/* Status */}
         <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-          <div className="text-sm font-semibold text-slate-900">Status</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-slate-900">Status</div>
+            {process.env.NODE_ENV === "development" && (
+              <div className={`text-xs font-semibold px-2 py-1 rounded ${apiOnline ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                API: {apiOnline ? "OK" : "OFFLINE"}
+              </div>
+            )}
+          </div>
           <div className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">{status || "—"}</div>
+          {process.env.NODE_ENV !== "production" && (
+            <div className="mt-2 text-xs text-slate-400 font-mono border-t border-slate-200 pt-2">
+              API_BASE={API_BASE}
+            </div>
+          )}
         </div>
 
         {/* Setup/Rules + Month-End Review */}
@@ -1564,6 +1661,15 @@ export default function HomePage() {
 
                       const evidence = f?.evidence ?? f?.meta ?? {};
                       const lines = extractMatchedLines(evidence);
+                      
+                      // Resolve owner for this finding
+                      const resolvedOwner = resolveOwnerForFinding(f, accountOwners);
+                      const displayOwner = resolvedOwner || {
+                        owner_name: f.owner_name || "",
+                        owner_email: f.owner_email || "",
+                        owner_role: f.owner_role,
+                        source: (f.owner_name || f.owner_email) ? "rule" : "none" as const,
+                      };
 
                       return (
                         <div key={key} className="p-4">
@@ -1574,6 +1680,19 @@ export default function HomePage() {
                                   {f.title || f.ruleName || "Finding"}
                                 </div>
                                 <div className="mt-1 text-sm text-slate-700">{f.summary || "—"}</div>
+                                {displayOwner.owner_name || displayOwner.owner_email ? (
+                                  <div className="mt-1 text-xs text-slate-600">
+                                    Owner: <span className="font-semibold">{displayOwner.owner_name || displayOwner.owner_email}</span>
+                                    {displayOwner.owner_email && displayOwner.owner_name && (
+                                      <span className="text-slate-500"> ({displayOwner.owner_email})</span>
+                                    )}
+                                    {displayOwner.owner_role && (
+                                      <span className="text-slate-500"> • {displayOwner.owner_role}</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="mt-1 text-xs text-slate-500">Owner: Unassigned</div>
+                                )}
                               </div>
                               <span
                                 className={`shrink-0 inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-bold ${severityStyle(
@@ -1659,48 +1778,53 @@ export default function HomePage() {
                                         </span>
                                       </div>
                                     )}
-                                    {(f.owner_name || f.owner_email) && (
+                                    {(displayOwner.owner_name || displayOwner.owner_email) ? (
                                       <div className="mt-2">
                                         <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500 mb-1">
                                           Owner / Responsible
                                         </div>
                                         <div>
                                           <span className="font-semibold text-slate-900">
-                                            {f.owner_name || f.owner_email}
+                                            {displayOwner.owner_name || displayOwner.owner_email}
                                           </span>
-                                          {f.owner_email && (
+                                          {displayOwner.owner_email && (
                                             <a
-                                              href={`mailto:${f.owner_email}`}
+                                              href={`mailto:${displayOwner.owner_email}`}
                                               className="ml-1 text-blue-600 hover:underline"
-                                              title={`Contact ${f.owner_name || f.owner_email}`}
+                                              title={`Contact ${displayOwner.owner_name || displayOwner.owner_email}`}
                                             >
                                               📧
                                             </a>
                                           )}
-                                          {f.owner_source && (
-                                            <span
-                                              className={`ml-2 inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-bold ${
-                                                f.owner_source === "rule"
-                                                  ? "border-purple-200 bg-purple-50 text-purple-900"
-                                                  : f.owner_source === "account"
-                                                  ? "border-blue-200 bg-blue-50 text-blue-900"
-                                                  : "border-slate-200 bg-slate-50 text-slate-700"
-                                              }`}
-                                            >
-                                              {f.owner_source === "rule"
-                                                ? "Rule"
-                                                : f.owner_source === "account"
-                                                ? "Account"
-                                                : "None"}
-                                            </span>
-                                          )}
+                                          <span
+                                            className={`ml-2 inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-bold ${
+                                              displayOwner.source === "rule"
+                                                ? "border-purple-200 bg-purple-50 text-purple-900"
+                                                : displayOwner.source === "account"
+                                                ? "border-blue-200 bg-blue-50 text-blue-900"
+                                                : "border-slate-200 bg-slate-50 text-slate-700"
+                                            }`}
+                                          >
+                                            {displayOwner.source === "rule"
+                                              ? "Rule"
+                                              : displayOwner.source === "account"
+                                              ? "Account"
+                                              : "None"}
+                                          </span>
                                         </div>
-                                        {f.owner_role && (
+                                        {displayOwner.owner_role && (
                                           <div className="mt-1 text-sm text-slate-700">
                                             <span className="text-slate-500">Role:</span>{" "}
-                                            <span className="font-semibold">{f.owner_role}</span>
+                                            <span className="font-semibold">{displayOwner.owner_role}</span>
                                           </div>
                                         )}
+                                      </div>
+                                    ) : (
+                                      <div className="mt-2">
+                                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500 mb-1">
+                                          Owner / Responsible
+                                        </div>
+                                        <div className="text-sm text-slate-600">Unassigned</div>
                                       </div>
                                     )}
                                   </div>

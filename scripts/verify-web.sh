@@ -4,7 +4,8 @@
 set -e
 
 PORT=${1:-3010}
-URL="http://127.0.0.1:$PORT"
+URL_IP="http://127.0.0.1:$PORT"
+URL_HOST="http://localhost:$PORT"
 
 echo "=== Verifying web server on port $PORT ==="
 echo ""
@@ -30,27 +31,50 @@ if [ -n "$TURBO_ENV" ]; then
   echo ""
 fi
 
-# Check HTTP response - REQUIRE real HTTP headers
-echo "Testing HTTP response (must return headers within 5s)..."
-HTTP_RESPONSE=$(curl -I --max-time 5 "$URL" 2>&1 || echo "FAILED")
+# Test both 127.0.0.1 and localhost
+FAILED=0
 
-if echo "$HTTP_RESPONSE" | grep -q "HTTP/"; then
-  echo "✅ HTTP server is responding:"
-  echo "$HTTP_RESPONSE" | head -5
+echo "Testing http://127.0.0.1:$PORT/ ..."
+HTTP_RESPONSE_IP=$(curl -I --max-time 5 "$URL_IP" 2>&1 || echo "FAILED")
+
+if echo "$HTTP_RESPONSE_IP" | grep -q "HTTP/"; then
+  echo "✅ http://127.0.0.1:$PORT/ is responding:"
+  echo "$HTTP_RESPONSE_IP" | head -3
   echo ""
-  echo "✅ Web server verification passed!"
+else
+  echo "❌ http://127.0.0.1:$PORT/ failed"
+  echo "Response: $HTTP_RESPONSE_IP"
+  FAILED=1
+fi
+
+echo "Testing http://localhost:$PORT/ ..."
+HTTP_RESPONSE_HOST=$(curl -I --max-time 5 "$URL_HOST" 2>&1 || echo "FAILED")
+
+if echo "$HTTP_RESPONSE_HOST" | grep -q "HTTP/"; then
+  echo "✅ http://localhost:$PORT/ is responding:"
+  echo "$HTTP_RESPONSE_HOST" | head -3
+  echo ""
+else
+  echo "❌ http://localhost:$PORT/ failed"
+  echo "Response: $HTTP_RESPONSE_HOST"
+  FAILED=1
+fi
+
+if [ $FAILED -eq 0 ]; then
+  echo "✅ Web server verification passed! Both URLs are responding."
   exit 0
 else
-  echo "❌ HTTP server is not responding correctly"
-  echo "Response: $HTTP_RESPONSE"
+  echo "❌ One or more URLs failed"
   echo ""
   echo "Debug info:"
   echo "  Port listeners:"
   lsof -nP -iTCP:$PORT -sTCP:LISTEN 2>/dev/null || echo "    (none)"
+  echo "  DNS lookup for localhost:"
+  node -e "require('dns').lookup('localhost',{all:true},(e,a)=>{console.log(e||JSON.stringify(a,null,2))})" 2>&1 || echo "    (DNS lookup failed)"
   echo "  Turbopack env vars:"
   env | grep -i turbo || echo "    (none)"
   echo ""
-  echo "The server may still be compiling or may be stuck. Check server logs."
+  echo "The server may still be compiling or may have binding issues. Check server logs."
   exit 1
 fi
 

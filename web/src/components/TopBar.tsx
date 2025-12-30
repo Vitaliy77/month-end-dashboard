@@ -84,6 +84,11 @@ export default function TopBar({ children, showNav = true }: Props) {
             </div>
             <div className="text-xs text-slate-600">
               {orgLine} • Period: {from} → {to}
+              {process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_BUILD_ID && (
+                <span className="ml-2 text-slate-400 font-mono">
+                  Build: {process.env.NEXT_PUBLIC_BUILD_ID}
+                </span>
+              )}
             </div>
           </div>
 

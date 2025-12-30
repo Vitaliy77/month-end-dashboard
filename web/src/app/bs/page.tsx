@@ -6,6 +6,10 @@ import { ui } from "@/components/ui";
 import { loadBalanceSheet, loadBalanceSheetSeries, type SeriesResponse } from "@/lib/api";
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
 import { SeriesTable } from "@/components/SeriesTable";
+import { flattenQboRows } from "@/lib/qboFlatten";
+import { buildHierarchy, flattenHierarchy, type HierarchyNode } from "@/lib/hierarchy";
+import { HierarchicalReportTable } from "@/components/HierarchicalReportTable";
+import { ReportHeader } from "@/components/ReportHeader";
 
 type Col = { ColTitle?: string; ColType?: string; MetaData?: any[] };
 type ColData = { value?: string; id?: string };
@@ -25,6 +29,74 @@ function money(v?: string) {
   const n = Number(s.replace(/,/g, ""));
   if (Number.isNaN(n)) return s;
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function toNumber(v?: string): number | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number(s.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Extract Assets, Liabilities, and Equity totals from QBO Balance Sheet structure.
+ * QBO typically has sections like "ASSETS", "LIABILITIES AND EQUITY", etc.
+ * Returns { assets, liabilities, equity, net } where net = assets - liabilities - equity
+ */
+function extractBsTotals(rows: RowNode[], totalColIndex: number = 1): {
+  assets: number | null;
+  liabilities: number | null;
+  equity: number | null;
+  net: number | null;
+} {
+  let assets: number | null = null;
+  let liabilities: number | null = null;
+  let equity: number | null = null;
+
+  function walkRows(rows: RowNode[]) {
+    for (const r of rows || []) {
+      const label = String(firstCell(r)?.value ?? "").trim().toUpperCase();
+      const isSection = r.type === "Section";
+      const summary = r.Summary?.ColData || [];
+
+      // Extract total from Summary.ColData (usually index 1 is the "Total" column)
+      if (isSection && summary.length > totalColIndex) {
+        const totalValue = summary[totalColIndex]?.value;
+        const totalNum = toNumber(totalValue);
+
+        // Match section labels (QBO uses various formats)
+        if (label.includes("ASSET") && !label.includes("LIABILIT") && !label.includes("EQUITY")) {
+          if (assets == null || Math.abs(totalNum ?? 0) > Math.abs(assets ?? 0)) {
+            assets = totalNum;
+          }
+        } else if (label.includes("LIABILIT")) {
+          if (liabilities == null || Math.abs(totalNum ?? 0) > Math.abs(liabilities ?? 0)) {
+            liabilities = totalNum;
+          }
+        } else if (label.includes("EQUITY")) {
+          if (equity == null || Math.abs(totalNum ?? 0) > Math.abs(equity ?? 0)) {
+            equity = totalNum;
+          }
+        }
+      }
+
+      // Recursively walk children
+      if (r.Rows?.Row) {
+        walkRows(r.Rows.Row);
+      }
+    }
+  }
+
+  walkRows(rows);
+
+  // Calculate net: Assets - Liabilities - Equity
+  const net =
+    assets != null && liabilities != null && equity != null
+      ? assets - liabilities - equity
+      : null;
+
+  return { assets, liabilities, equity, net };
 }
 
 function isNumberish(v?: string) {
@@ -237,6 +309,9 @@ export default function BalanceSheetPage() {
   const [raw, setRaw] = useState<any>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(new Set());
+  const [useSeries, setUseSeries] = useState(false);
+  const [seriesData, setSeriesData] = useState<SeriesResponse | null>(null);
+  const [showGrouped, setShowGrouped] = useState(true);
 
   // Check if range spans multiple months
   const spansMultipleMonths = useMemo(() => {
@@ -297,6 +372,82 @@ export default function BalanceSheetPage() {
     return Array.isArray(top) ? top : [];
   }, [bs]);
 
+  // Flatten QBO rows to extract paths and values
+  const flatRows = useMemo(() => {
+    if (!bs || rows.length === 0) return [];
+    return flattenQboRows(rows, columns.slice(1)); // Skip first column (Account)
+  }, [bs, rows, columns]);
+
+  // Build hierarchy from flat rows
+  const hierarchyTree = useMemo(() => {
+    if (flatRows.length === 0) return null;
+    return buildHierarchy(flatRows, {
+      pathAccessor: (row) => row.path,
+      valueAccessor: (row, colKey) => row.values[colKey] ?? null,
+      columns: columns.slice(1), // Skip first column
+    });
+  }, [flatRows, columns]);
+
+  // Flatten hierarchy for flat view
+  const flatHierarchy = useMemo(() => {
+    if (!hierarchyTree) return [];
+    return flattenHierarchy(hierarchyTree);
+  }, [hierarchyTree]);
+
+  // Calculate net check: Assets = Liabilities + Equity
+  const bsTotals = useMemo(() => {
+    if (!bs || rows.length === 0) return null;
+    // Find the "Total" column index (usually index 1, but check Columns)
+    const cols = bs?.Columns?.Column || [];
+    const totalColIndex = cols.findIndex((c: Col) =>
+      String(c?.ColTitle ?? "").toUpperCase().includes("TOTAL")
+    );
+    const colIndex = totalColIndex >= 0 ? totalColIndex : 1;
+    return extractBsTotals(rows, colIndex);
+  }, [bs, rows]);
+
+  // Calculate balance check per column for series data
+  const seriesBalanceCheck = useMemo(() => {
+    if (!seriesData) return null;
+    const { rows: seriesRows, columns: seriesColumns } = seriesData;
+    
+    // Find Assets, Liabilities, and Equity rows
+    let assetsTotal: Record<string, number> = {};
+    let liabilitiesTotal: Record<string, number> = {};
+    let equityTotal: Record<string, number> = {};
+    
+    for (const row of seriesRows) {
+      const name = String(row.account_name || "").trim().toUpperCase();
+      const isAssets = name.includes("ASSET") && !name.includes("LIABILIT") && !name.includes("EQUITY");
+      const isLiabilities = name.includes("LIABILIT");
+      const isEquity = name.includes("EQUITY") && !name.includes("LIABILIT");
+      
+      if (isAssets || isLiabilities || isEquity) {
+        for (const colKey of seriesColumns) {
+          const val = row.values[colKey] ?? 0;
+          if (isAssets) {
+            assetsTotal[colKey] = (assetsTotal[colKey] ?? 0) + val;
+          } else if (isLiabilities) {
+            liabilitiesTotal[colKey] = (liabilitiesTotal[colKey] ?? 0) + val;
+          } else if (isEquity) {
+            equityTotal[colKey] = (equityTotal[colKey] ?? 0) + val;
+          }
+        }
+      }
+    }
+    
+    // Compute diff per column: Assets - Liabilities - Equity
+    const balanceCheck: Record<string, number> = {};
+    for (const colKey of seriesColumns) {
+      const assets = assetsTotal[colKey] ?? 0;
+      const liabilities = liabilitiesTotal[colKey] ?? 0;
+      const equity = equityTotal[colKey] ?? 0;
+      balanceCheck[colKey] = assets - liabilities - equity;
+    }
+    
+    return balanceCheck;
+  }, [seriesData]);
+
   const toggleCollapsed = (key: string) => {
     setCollapsedKeys((prev) => {
       const next = new Set(prev);
@@ -306,49 +457,134 @@ export default function BalanceSheetPage() {
     });
   };
 
+  // Safe helpers before JSX
+  const hasSeries = !!seriesData;
+  const viewData = useSeries && hasSeries ? seriesData : raw;
+
+  // Extract table rendering to avoid deeply nested JSX
+  function renderTable() {
+    if (rows.length === 0) {
+      return <div className="text-sm text-slate-700">No rows returned.</div>;
+    }
+    if (!hierarchyTree) {
+      return <div className="text-sm text-slate-700">Building hierarchy...</div>;
+    }
+    return (
+      <>
+        {showGrouped ? (
+          <HierarchicalReportTable
+            tree={hierarchyTree}
+            columns={columns}
+            renderValue={(node, colKey) => {
+              const val = node.values?.[colKey];
+              return val != null ? money(String(val)) : "—";
+            }}
+            formatMoney={(val) => (val != null ? money(String(val)) : "—")}
+            showGrouped={true}
+            onToggleGroup={(key) => {
+              setCollapsedKeys((prev) => {
+                const next = new Set(prev);
+                if (next.has(key)) next.delete(key);
+                else next.add(key);
+                return next;
+              });
+            }}
+            collapsedGroups={collapsedKeys}
+          />
+        ) : (
+          <HierarchicalReportTable
+            tree={hierarchyTree}
+            columns={columns}
+            renderValue={(node, colKey) => {
+              const val = node.values?.[colKey];
+              return val != null ? money(String(val)) : "—";
+            }}
+            formatMoney={(val) => (val != null ? money(String(val)) : "—")}
+            showGrouped={false}
+          />
+        )}
+        
+        {/* Net Check: Assets = Liabilities + Equity */}
+        {bsTotals && (
+          <div className={`mt-6 rounded-2xl border-2 p-4 ${
+            bsTotals.net != null && Math.abs(bsTotals.net) > 0.01
+              ? "border-red-300 bg-red-50/80"
+              : "border-green-300 bg-green-50/80"
+          }`}>
+            <div className="text-sm font-bold text-slate-900 mb-2">Balance Sheet Net Check</div>
+            <div className="text-xs text-slate-700 space-y-1">
+              <div>Assets: <span className="font-semibold">{money(String(bsTotals.assets ?? ""))}</span></div>
+              <div>Liabilities: <span className="font-semibold">{money(String(bsTotals.liabilities ?? ""))}</span></div>
+              <div>Equity: <span className="font-semibold">{money(String(bsTotals.equity ?? ""))}</span></div>
+              <div className="mt-2 pt-2 border-t border-slate-300">
+                Net (Assets - Liabilities - Equity):{" "}
+                <span className={`font-bold ${
+                  bsTotals.net != null && Math.abs(bsTotals.net) > 0.01
+                    ? "text-red-700"
+                    : "text-green-700"
+                }`}>
+                  {money(String(bsTotals.net ?? ""))}
+                </span>
+                {bsTotals.net != null && Math.abs(bsTotals.net) > 0.01 && (
+                  <span className="ml-2 text-red-700 font-semibold">⚠️ Does not net to zero!</span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       
 
       <main className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-6 space-y-4">
-        <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-6">
-          <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">Balance Sheet</div>
-          <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">BS Report</div>
-
-          <div className="mt-2 text-sm text-slate-600">
-            orgId: <span className="font-semibold text-slate-900">{orgId || "—"}</span>
-            {orgName ? (
-              <>
-                {" "}
-                • <span className="font-semibold text-slate-900">{orgName}</span>
-              </>
-            ) : null}
-            {" • "}Period: <span className="font-semibold text-slate-900">{from || "—"}</span> →{" "}
-            <span className="font-semibold text-slate-900">{to || "—"}</span>
-          </div>
-
-          <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap items-start">
-            <button
-              className={`${ui.btn} ${ui.btnGhost}`}
-              onClick={() => setShowRaw((v) => !v)}
-              disabled={!raw}
-              title={!raw ? "Load the Balance Sheet first" : ""}
-            >
-              {showRaw ? "Hide raw JSON" : "Show raw JSON"}
-            </button>
-
-            {raw?.reportUrl && (
-              <a className={ui.linkBtn} href={raw.reportUrl} target="_blank" rel="noreferrer">
-                Open QBO report →
-              </a>
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-          <div className="text-sm font-semibold text-slate-900">Status</div>
-          <div className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{status}</div>
-        </div>
+        <ReportHeader
+          title="BS"
+          orgLine={`orgId: ${orgId || "—"}${orgName ? ` • ${orgName}` : ""} • Period: ${from || "—"} → ${to || "—"}`}
+          controls={
+            <>
+              <button
+                className={`${ui.btn} ${ui.btnGhost}`}
+                onClick={() => setShowRaw((v) => !v)}
+                disabled={!raw}
+                title={!raw ? "Load the Balance Sheet first" : ""}
+              >
+                {showRaw ? "Hide raw JSON" : "Show raw JSON"}
+              </button>
+              {hasSeries && (
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useSeries}
+                    onChange={(e) => setUseSeries(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-slate-700">Use series view</span>
+                </label>
+              )}
+              {!useSeries && raw && hierarchyTree && (
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showGrouped}
+                    onChange={(e) => setShowGrouped(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-slate-700">Grouped view</span>
+                </label>
+              )}
+              {raw?.reportUrl && (
+                <a className={ui.linkBtn} href={raw.reportUrl} target="_blank" rel="noreferrer">
+                  Open QBO report →
+                </a>
+              )}
+            </>
+          }
+          statusText={status || "—"}
+        />
 
         {showRaw && raw && (
           <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
@@ -359,14 +595,14 @@ export default function BalanceSheetPage() {
           </div>
         )}
 
-        {!showRaw && (useSeries ? seriesData : raw) && (
+        {!showRaw && viewData && (
           <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-            {useSeries && seriesData ? (
+            {useSeries && hasSeries ? (
               <div>
                 <div className="mb-3 text-xs text-slate-600">
                   Multi-month view: {seriesData.months.length} month(s) • Start = {priorDay(from)}, End = {to}
                 </div>
-                <SeriesTable data={seriesData} reportType="bs" from={from} to={to} />
+                <SeriesTable data={seriesData} reportType="bs" from={from} to={to} balanceCheck={seriesBalanceCheck || undefined} />
               </div>
             ) : (
               <>
@@ -378,11 +614,7 @@ export default function BalanceSheetPage() {
                   </div>
                 </div>
 
-                {rows.length === 0 ? (
-                  <div className="text-sm text-slate-700">No rows returned.</div>
-                ) : (
-                  <ReportTable columns={columns} rows={rows} collapsed={collapsedKeys} toggleCollapsed={toggleCollapsed} />
-                )}
+                {renderTable()}
               </>
             )}
           </div>

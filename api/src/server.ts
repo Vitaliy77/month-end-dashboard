@@ -1,7 +1,9 @@
 // api/src/server.ts
 
-import dotenv from "dotenv";
-dotenv.config({ path: new URL("../.env", import.meta.url).pathname });
+// CRITICAL: Load environment variables FIRST, before any other imports
+import "./load-env.js";
+
+import crypto from "crypto";
 
 // Log environment variables at startup (safe, no secrets)
 console.log("[env] PORT=", process.env.PORT);
@@ -10,6 +12,31 @@ console.log("[env] QBO_ENV=", process.env.QBO_ENV);
 console.log("[env] QBO_CLIENT_ID=", process.env.QBO_CLIENT_ID ? "***SET***" : "MISSING");
 console.log("[env] APP_BASE_URL=", process.env.APP_BASE_URL);
 console.log("[env] WEB_BASE_URL=", process.env.WEB_BASE_URL);
+
+// Credential fingerprint function (no secrets exposed)
+function logCredentialFingerprint(context: string) {
+  const clientId = process.env.QBO_CLIENT_ID || "";
+  const clientSecret = process.env.QBO_CLIENT_SECRET || "";
+  const qboEnv = process.env.QBO_ENV || "";
+  const redirectUri = process.env.QBO_REDIRECT_URI || "";
+  
+  const clientIdLast4 = clientId.length >= 4 ? clientId.slice(-4) : "N/A";
+  const clientSecretLast2 = clientSecret.length >= 2 ? clientSecret.slice(-2) : "N/A";
+  
+  // Hash of "client_id:client_secret" for fingerprinting
+  const fingerprintInput = `${clientId}:${clientSecret}`;
+  const fingerprintHash = crypto.createHash("sha256").update(fingerprintInput).digest("hex").slice(0, 8);
+  
+  console.log(`[credential-fingerprint:${context}]`);
+  console.log(`  QBO_ENV: ${qboEnv}`);
+  console.log(`  QBO_REDIRECT_URI: ${redirectUri}`);
+  console.log(`  QBO_CLIENT_ID: length=${clientId.length}, last4=${clientIdLast4}`);
+  console.log(`  QBO_CLIENT_SECRET: length=${clientSecret.length}, last2=${clientSecretLast2}`);
+  console.log(`  Fingerprint (sha256 first 8): ${fingerprintHash}`);
+}
+
+// Log credential fingerprint at startup
+logCredentialFingerprint("startup");
 
 import express from "express";
 import cors from "cors";
