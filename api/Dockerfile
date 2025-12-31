@@ -11,8 +11,8 @@ RUN node -p "require.resolve('express')"
 # copy source
 COPY . .
 
-# build (allow TS errors, but emit dist/)
-RUN npm run build || true
+# build
+RUN npm run build
 
 ENV PORT=8080
 EXPOSE 8080

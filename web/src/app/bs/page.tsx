@@ -7,8 +7,8 @@ import { loadBalanceSheet, loadBalanceSheetSeries, type SeriesResponse } from "@
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
 import { SeriesTable } from "@/components/SeriesTable";
 import { flattenQboRows } from "@/lib/qboFlatten";
-import { buildHierarchy, flattenHierarchy, type HierarchyNode } from "@/lib/hierarchy";
-import { HierarchicalReportTable } from "@/components/HierarchicalReportTable";
+import { buildStatementTree, flattenStatementTree, type StatementRow } from "@/lib/statementTree";
+import { StatementTable } from "@/components/StatementTable";
 import { ReportHeader } from "@/components/ReportHeader";
 
 type Col = { ColTitle?: string; ColType?: string; MetaData?: any[] };
@@ -378,21 +378,109 @@ export default function BalanceSheetPage() {
     return flattenQboRows(rows, columns.slice(1)); // Skip first column (Account)
   }, [bs, rows, columns]);
 
-  // Build hierarchy from flat rows
-  const hierarchyTree = useMemo(() => {
-    if (flatRows.length === 0) return null;
-    return buildHierarchy(flatRows, {
-      pathAccessor: (row) => row.path,
-      valueAccessor: (row, colKey) => row.values[colKey] ?? null,
-      columns: columns.slice(1), // Skip first column
-    });
-  }, [flatRows, columns]);
+  // Convert FlatRow to StatementRow format (for single-month view)
+  const statementRowsFromBs: StatementRow[] = useMemo(() => {
+    return flatRows.map((row) => ({
+      account_id: row.accountId,
+      account_path: row.path,
+      account_name: row.label,
+      ...row.values, // Spread all column values
+    }));
+  }, [flatRows]);
 
-  // Flatten hierarchy for flat view
-  const flatHierarchy = useMemo(() => {
-    if (!hierarchyTree) return [];
-    return flattenHierarchy(hierarchyTree);
-  }, [hierarchyTree]);
+  // Convert SeriesRow to StatementRow format (for multi-month view)
+  const statementRowsFromSeries: StatementRow[] = useMemo(() => {
+    if (!seriesData || !seriesData.rows) return [];
+    return seriesData.rows.map((row) => {
+      // SeriesRow.account_name is the full path like "ASSETS / Current Assets / Bank Accounts / Checking"
+      const fullPath = row.account_name || "";
+      // Extract leaf name (last segment after ' / ')
+      const pathSegments = fullPath.split(" / ").filter(Boolean);
+      const leafName = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : fullPath;
+      
+      // Build StatementRow with proper mapping
+      const statementRow: StatementRow = {
+        account_id: row.account_id || undefined,
+        account_path: fullPath, // Full path for tree building
+        account_name: leafName, // Only leaf segment for display
+        ...row.values, // Spread all column values (start, 2025-09, 2025-10, ..., end)
+      };
+      
+      return statementRow;
+    });
+  }, [seriesData]);
+
+  // Use series data if available and enabled, otherwise use BS data
+  const statementRows: StatementRow[] = useMemo(() => {
+    if (useSeries && seriesData) {
+      return statementRowsFromSeries;
+    }
+    return statementRowsFromBs;
+  }, [useSeries, seriesData, statementRowsFromSeries, statementRowsFromBs]);
+
+  // Build statement tree with proper grouping (works for both single-month and series views)
+  const statementTree = useMemo(() => {
+    if (statementRows.length === 0) return null;
+    
+    // For series view, use series columns; for single-month, use BS columns
+    const columnKeys = useSeries && seriesData 
+      ? seriesData.columns // ["start", "2025-09", "2025-10", ..., "end"]
+      : columns.slice(1); // Skip first column (Account)
+    
+    const tree = buildStatementTree(statementRows, {
+      pathAccessor: (row) => row.account_path || row.account_name || "",
+      accountIdAccessor: (row) => row.account_id,
+      columnKeys,
+    });
+    
+    return tree;
+  }, [statementRows, columns, useSeries, seriesData]);
+
+  // Flatten tree for display (includes subtotals) - works for both single-month and series views
+  const displayRows = useMemo(() => {
+    if (!statementTree) return [];
+    
+    // Get column keys for computed rows
+    const columnKeys = useSeries && seriesData 
+      ? seriesData.columns // ["start", "2025-09", "2025-10", ..., "end"]
+      : columns.slice(1); // Skip first column (Account)
+    
+    const flattened = flattenStatementTree(statementTree, {
+      includeSubtotals: true,
+      includeStatementTotals: true,
+      indentPerLevel: 16,
+      statementType: "bs",
+      columnKeys,
+    });
+    
+    return flattened;
+  }, [statementTree, useSeries, seriesData, columns]);
+
+  // Column model: for series view, we need both key (for value lookup) and label (for display)
+  type ColumnModel = { key: string; label: string };
+  
+  const displayColumns: ColumnModel[] = useMemo(() => {
+    if (useSeries && seriesData) {
+      // Series view: map raw keys to display labels
+      return [
+        { key: "account", label: "Account" }, // First column is always Account
+        ...seriesData.columns.map(col => {
+          if (col === "start") return { key: "start", label: "Start" };
+          if (col === "end") return { key: "end", label: "End" };
+          // Format month: "2025-09" -> "Sep 2025"
+          const [year, month] = col.split("-");
+          const monthNum = parseInt(month, 10);
+          const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+          return { key: col, label: `${monthNames[monthNum - 1]} ${year}` };
+        })
+      ];
+    }
+    // Single-month view: use column titles as both key and label
+    return columns.map((col, idx) => ({
+      key: idx === 0 ? "account" : col || `col${idx}`,
+      label: col || (idx === 0 ? "Account" : ""),
+    }));
+  }, [useSeries, seriesData, columns]);
 
   // Calculate net check: Assets = Liabilities + Equity
   const bsTotals = useMemo(() => {
@@ -463,74 +551,58 @@ export default function BalanceSheetPage() {
 
   // Extract table rendering to avoid deeply nested JSX
   function renderTable() {
-    if (rows.length === 0) {
-      return <div className="text-sm text-slate-700">No rows returned.</div>;
-    }
-    if (!hierarchyTree) {
-      return <div className="text-sm text-slate-700">Building hierarchy...</div>;
-    }
     return (
       <>
-        {showGrouped ? (
-          <HierarchicalReportTable
-            tree={hierarchyTree}
-            columns={columns}
-            renderValue={(node, colKey) => {
-              const val = node.values?.[colKey];
-              return val != null ? money(String(val)) : "—";
-            }}
-            formatMoney={(val) => (val != null ? money(String(val)) : "—")}
-            showGrouped={true}
-            onToggleGroup={(key) => {
-              setCollapsedKeys((prev) => {
-                const next = new Set(prev);
-                if (next.has(key)) next.delete(key);
-                else next.add(key);
-                return next;
-              });
-            }}
-            collapsedGroups={collapsedKeys}
-          />
+        {/* Conditional rendering based on tree and displayRows state */}
+        {!statementTree ? (
+          <div className="text-sm text-slate-700">Building hierarchy...</div>
+        ) : displayRows.length === 0 ? (
+          <div className="text-sm text-slate-700">No display rows generated.</div>
         ) : (
-          <HierarchicalReportTable
-            tree={hierarchyTree}
-            columns={columns}
-            renderValue={(node, colKey) => {
-              const val = node.values?.[colKey];
-              return val != null ? money(String(val)) : "—";
-            }}
-            formatMoney={(val) => (val != null ? money(String(val)) : "—")}
-            showGrouped={false}
-          />
-        )}
-        
-        {/* Net Check: Assets = Liabilities + Equity */}
-        {bsTotals && (
-          <div className={`mt-6 rounded-2xl border-2 p-4 ${
-            bsTotals.net != null && Math.abs(bsTotals.net) > 0.01
-              ? "border-red-300 bg-red-50/80"
-              : "border-green-300 bg-green-50/80"
-          }`}>
-            <div className="text-sm font-bold text-slate-900 mb-2">Balance Sheet Net Check</div>
-            <div className="text-xs text-slate-700 space-y-1">
-              <div>Assets: <span className="font-semibold">{money(String(bsTotals.assets ?? ""))}</span></div>
-              <div>Liabilities: <span className="font-semibold">{money(String(bsTotals.liabilities ?? ""))}</span></div>
-              <div>Equity: <span className="font-semibold">{money(String(bsTotals.equity ?? ""))}</span></div>
-              <div className="mt-2 pt-2 border-t border-slate-300">
-                Net (Assets - Liabilities - Equity):{" "}
-                <span className={`font-bold ${
-                  bsTotals.net != null && Math.abs(bsTotals.net) > 0.01
-                    ? "text-red-700"
-                    : "text-green-700"
-                }`}>
-                  {money(String(bsTotals.net ?? ""))}
-                </span>
-                {bsTotals.net != null && Math.abs(bsTotals.net) > 0.01 && (
-                  <span className="ml-2 text-red-700 font-semibold">⚠️ Does not net to zero!</span>
-                )}
+          <>
+            <StatementTable
+              rows={displayRows}
+              columns={displayColumns}
+              formatMoney={(val) => {
+                if (val == null || !Number.isFinite(val)) return "—";
+                const absValue = Math.abs(val);
+                const formatted = absValue.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                });
+                return val < 0 ? `(${formatted})` : formatted;
+              }}
+            />
+            
+            {/* Net Check: Assets = Liabilities + Equity */}
+            {bsTotals && !useSeries && (
+              <div className={`mt-6 rounded-2xl border-2 p-4 ${
+                bsTotals.net != null && Math.abs(bsTotals.net) > 0.01
+                  ? "border-red-300 bg-red-50/80"
+                  : "border-green-300 bg-green-50/80"
+              }`}>
+                <div className="text-sm font-bold text-slate-900 mb-2">Balance Sheet Net Check</div>
+                <div className="text-xs text-slate-700 space-y-1">
+                  <div>Assets: <span className="font-semibold">{money(String(bsTotals.assets ?? ""))}</span></div>
+                  <div>Liabilities: <span className="font-semibold">{money(String(bsTotals.liabilities ?? ""))}</span></div>
+                  <div>Equity: <span className="font-semibold">{money(String(bsTotals.equity ?? ""))}</span></div>
+                  <div className="mt-2 pt-2 border-t border-slate-300">
+                    Net (Assets - Liabilities - Equity):{" "}
+                    <span className={`font-bold ${
+                      bsTotals.net != null && Math.abs(bsTotals.net) > 0.01
+                        ? "text-red-700"
+                        : "text-green-700"
+                    }`}>
+                      {money(String(bsTotals.net ?? ""))}
+                    </span>
+                    {bsTotals.net != null && Math.abs(bsTotals.net) > 0.01 && (
+                      <span className="ml-2 text-red-700 font-semibold">⚠️ Does not net to zero!</span>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+          </>
         )}
       </>
     );
@@ -538,8 +610,6 @@ export default function BalanceSheetPage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      
-
       <main className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-6 space-y-4">
         <ReportHeader
           title="BS"
@@ -565,7 +635,7 @@ export default function BalanceSheetPage() {
                   <span className="text-slate-700">Use series view</span>
                 </label>
               )}
-              {!useSeries && raw && hierarchyTree && (
+              {!useSeries && raw && statementTree && (
                 <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
                   <input
                     type="checkbox"
@@ -602,7 +672,10 @@ export default function BalanceSheetPage() {
                 <div className="mb-3 text-xs text-slate-600">
                   Multi-month view: {seriesData.months.length} month(s) • Start = {priorDay(from)}, End = {to}
                 </div>
-                <SeriesTable data={seriesData} reportType="bs" from={from} to={to} balanceCheck={seriesBalanceCheck || undefined} />
+                {/* OLD SeriesTable - COMMENTED OUT - Using StatementTable instead */}
+                {false && <SeriesTable data={seriesData} reportType="bs" from={from} to={to} balanceCheck={seriesBalanceCheck || undefined} />}
+                {/* Use StatementTable for series view too */}
+                {renderTable()}
               </div>
             ) : (
               <>

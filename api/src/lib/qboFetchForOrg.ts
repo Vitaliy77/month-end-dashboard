@@ -23,7 +23,7 @@ async function getQboConnection(orgId: string): Promise<QboConn | null> {
   return rows[0] || null;
 }
 
-async function getValidQboConnection(orgId: string): Promise<QboConn> {
+export async function getValidQboConnection(orgId: string): Promise<QboConn> {
   const c = await getQboConnection(orgId);
   if (!c) throw new Error("No QBO connection found for this org");
 
@@ -57,7 +57,7 @@ async function getValidQboConnection(orgId: string): Promise<QboConn> {
   return c2;
 }
 
-function qboApiBase(realmId: string) {
+export function qboApiBase(realmId: string) {
   const host =
     (ENV as any).QBO_BASE_URL ??
     (ENV.QBO_ENV === "production"
@@ -95,7 +95,10 @@ export async function qboFetchForOrg(
     ...(init.headers as any),
   };
 
-  const resp = await fetch(url.toString(), { ...init, method: "GET", headers });
+  const method = init.method || "GET";
+  const body = init.body;
+  
+  const resp = await fetch(url.toString(), { ...init, method, headers, body });
   const text = await resp.text();
 
   let json: any = null;

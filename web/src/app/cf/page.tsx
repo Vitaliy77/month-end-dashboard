@@ -1,14 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { ui } from "@/components/ui";
 import { loadCashFlow, loadCashFlowSeries, type SeriesResponse } from "@/lib/api";
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
-import { SeriesTable } from "@/components/SeriesTable";
 import { flattenQboRows } from "@/lib/qboFlatten";
-import { buildHierarchy } from "@/lib/hierarchy";
-import { HierarchicalReportTable } from "@/components/HierarchicalReportTable";
+import { buildStatementTree, flattenStatementTree, type StatementRow } from "@/lib/statementTree";
+import { StatementTable } from "@/components/StatementTable";
 import { ReportHeader } from "@/components/ReportHeader";
 
 type Col = { ColTitle?: string; ColType?: string; MetaData?: any[] };
@@ -31,201 +30,6 @@ function money(v?: string) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function isNumberish(v?: string) {
-  if (v == null) return false;
-  const s = String(v).trim();
-  if (!s) return false;
-  return /^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$/.test(s) || /^-?\d+(?:\.\d+)?$/.test(s);
-}
-
-function firstCell(r: RowNode): ColData {
-  const cd = r.ColData || r.Header?.ColData || [];
-  return (cd?.[0] ?? {}) as ColData;
-}
-
-function getRowCells(r: RowNode): ColData[] {
-  const cd = r.ColData || r.Header?.ColData || [];
-  return (cd ?? []) as ColData[];
-}
-
-function slugKey(s: string) {
-  return (s || "")
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-_]/g, "")
-    .slice(0, 80);
-}
-
-function renderRows({
-  rows,
-  level,
-  columnsCount,
-  parentKey,
-  collapsed,
-  toggleCollapsed,
-}: {
-  rows: RowNode[];
-  level: number;
-  columnsCount: number;
-  parentKey: string;
-  collapsed: Set<string>;
-  toggleCollapsed: (key: string) => void;
-}): ReactNode[] {
-  const out: ReactNode[] = [];
-
-  rows.forEach((r, idx) => {
-    const cells = getRowCells(r);
-    const label = String(firstCell(r)?.value ?? "").trim();
-    const id = String(firstCell(r)?.id ?? "").trim();
-
-    const isSection = r.type === "Section";
-    const children = r.Rows?.Row || [];
-    const hasChildren = Array.isArray(children) && children.length > 0;
-    const summary = r.Summary?.ColData?.map((c) => c?.value ?? "") || [];
-
-    const nodeKey = `${parentKey}/${idx}-${slugKey(label || r.group || r.type || "row")}`;
-    const isCollapsed = collapsed.has(nodeKey);
-
-    if (isSection && hasChildren) {
-      out.push(
-        <tr key={`${nodeKey}#section`} className="bg-slate-50/70 border-b border-slate-200">
-          <td className="px-4 py-3 font-semibold text-slate-900">
-            <div style={{ paddingLeft: 12 * level }} className="flex items-center gap-2">
-              <button
-                className={[
-                  "h-7 w-7 inline-flex items-center justify-center rounded-lg",
-                  "border border-slate-200 bg-white",
-                  "hover:scale-110 active:scale-110 transition-transform",
-                  "text-slate-700",
-                ].join(" ")}
-                onClick={() => toggleCollapsed(nodeKey)}
-                aria-label={isCollapsed ? "Expand section" : "Collapse section"}
-                title={isCollapsed ? "Expand" : "Collapse"}
-              >
-                {isCollapsed ? "▸" : "▾"}
-              </button>
-
-              {id ? (
-                <span className="text-[11px] tabular-nums rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-slate-600">
-                  {id}
-                </span>
-              ) : null}
-
-              <span>{label || "—"}</span>
-            </div>
-          </td>
-
-          {Array.from({ length: columnsCount - 1 }).map((_, i) => (
-            <td key={`${nodeKey}#section-pad-${i}`} className="px-4 py-3 text-right tabular-nums font-semibold" />
-          ))}
-        </tr>
-      );
-
-      if (!isCollapsed) {
-        out.push(
-          ...renderRows({
-            rows: children,
-            level: level + 1,
-            columnsCount,
-            parentKey: `${nodeKey}#children`,
-            collapsed,
-            toggleCollapsed,
-          })
-        );
-
-        if (summary.length > 1) {
-          out.push(
-            <tr key={`${nodeKey}#summary`} className="border-b border-slate-200">
-              <td className="px-4 py-3 font-semibold text-slate-900">
-                <div style={{ paddingLeft: 12 * level }}>{label} — Total</div>
-              </td>
-              {summary.slice(1).map((v, i) => (
-                <td key={`${nodeKey}#summary-${i}`} className="px-4 py-3 text-right tabular-nums font-semibold">
-                  {isNumberish(String(v)) ? money(String(v)) : String(v)}
-                </td>
-              ))}
-              {summary.length - 1 < columnsCount - 1 &&
-                Array.from({ length: columnsCount - 1 - (summary.length - 1) }).map((_, k) => (
-                  <td key={`${nodeKey}#summary-pad-${k}`} />
-                ))}
-            </tr>
-          );
-        }
-      }
-      return;
-    }
-
-    out.push(
-      <tr key={`${nodeKey}#row`} className="border-b border-slate-100 hover:bg-slate-50/60">
-        <td className="px-4 py-2.5 text-slate-900">
-          <div style={{ paddingLeft: 12 * level }} className="flex items-center gap-2">
-            {id ? (
-              <span className="text-[11px] tabular-nums rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-slate-600">
-                {id}
-              </span>
-            ) : null}
-            <span className="font-medium">{label || "—"}</span>
-          </div>
-        </td>
-
-        {cells.slice(1).map((c, i) => {
-          const v = c?.value ?? "";
-          return (
-            <td key={`${nodeKey}#cell-${i}`} className="px-4 py-2.5 text-right tabular-nums text-slate-800">
-              {isNumberish(String(v)) ? money(String(v)) : String(v)}
-            </td>
-          );
-        })}
-
-        {cells.length - 1 < columnsCount - 1 &&
-          Array.from({ length: columnsCount - 1 - (cells.length - 1) }).map((_, k) => (
-            <td key={`${nodeKey}#pad-${k}`} />
-          ))}
-      </tr>
-    );
-  });
-
-  return out;
-}
-
-function ReportTable({
-  columns,
-  rows,
-  collapsed,
-  toggleCollapsed,
-}: {
-  columns: string[];
-  rows: RowNode[];
-  collapsed: Set<string>;
-  toggleCollapsed: (key: string) => void;
-}) {
-  const columnsCount = Math.max(columns.length, 2);
-
-  return (
-    <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
-      <table className="min-w-[980px] w-full text-sm">
-        <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
-          <tr>
-            {columns.map((c, i) => (
-              <th
-                key={i}
-                className={[
-                  "px-4 py-3 text-left font-semibold text-slate-700",
-                  i === 0 ? "min-w-[420px]" : "text-right min-w-[140px]",
-                ].join(" ")}
-              >
-                {c || (i === 0 ? "Line" : "")}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>{renderRows({ rows, level: 0, columnsCount, parentKey: "cf", collapsed, toggleCollapsed })}</tbody>
-      </table>
-    </div>
-  );
-}
-
 export default function CashFlowPage() {
   const { state } = useOrgPeriod();
   const orgId = state.orgId;
@@ -236,10 +40,8 @@ export default function CashFlowPage() {
   const [status, setStatus] = useState<string>("—");
   const [raw, setRaw] = useState<any>(null);
   const [showRaw, setShowRaw] = useState(false);
-  const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(new Set());
   const [seriesData, setSeriesData] = useState<SeriesResponse | null>(null);
   const [useSeries, setUseSeries] = useState(false);
-  const [showGrouped, setShowGrouped] = useState(true);
 
   // Check if range spans multiple months
   const spansMultipleMonths = useMemo(() => {
@@ -294,59 +96,141 @@ export default function CashFlowPage() {
     return Array.isArray(top) ? top : [];
   }, [cf]);
 
-  // Flatten QBO rows to extract paths and values
+  // Flatten QBO rows to extract paths and values (for single-month view)
   const flatRows = useMemo(() => {
     if (!cf || rows.length === 0) return [];
     return flattenQboRows(rows, columns.slice(1)); // Skip first column
   }, [cf, rows, columns]);
 
-  // Build hierarchy from flat rows
-  const hierarchyTree = useMemo(() => {
-    if (flatRows.length === 0) return null;
-    return buildHierarchy(flatRows, {
-      pathAccessor: (row) => row.path,
-      valueAccessor: (row, colKey) => row.values[colKey] ?? null,
-      columns: columns.slice(1), // Skip first column
-    });
-  }, [flatRows, columns]);
+  // Convert FlatRow to StatementRow format (for single-month view)
+  const statementRowsFromCf: StatementRow[] = useMemo(() => {
+    return flatRows.map((row) => ({
+      account_id: row.accountId,
+      account_path: row.path,
+      account_name: row.label,
+      ...row.values, // Spread all column values
+    }));
+  }, [flatRows]);
 
-  const toggleCollapsed = (key: string) => {
-    setCollapsedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+  // Convert SeriesRow to StatementRow format (for multi-month view)
+  const statementRowsFromSeries: StatementRow[] = useMemo(() => {
+    if (!seriesData || !seriesData.rows) return [];
+    return seriesData.rows.map((row) => {
+      // SeriesRow.account_name is the full path like "OPERATING ACTIVITIES / Cash from Operations"
+      const fullPath = row.account_name || "";
+      // Extract leaf name (last segment after ' / ')
+      const pathSegments = fullPath.split(" / ").filter(Boolean);
+      const leafName = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : fullPath;
+      
+      // Build StatementRow with proper mapping
+      const statementRow: StatementRow = {
+        account_id: row.account_id || undefined,
+        account_path: fullPath, // Full path for tree building
+        account_name: leafName, // Only leaf segment for display
+        ...row.values, // Spread all column values (start, 2025-09, 2025-10, ..., end)
+      };
+      
+      return statementRow;
     });
-  };
+  }, [seriesData]);
+
+  // Use series data if available and enabled, otherwise use CF data
+  const statementRows: StatementRow[] = useMemo(() => {
+    if (useSeries && seriesData) {
+      return statementRowsFromSeries;
+    }
+    return statementRowsFromCf;
+  }, [useSeries, seriesData, statementRowsFromSeries, statementRowsFromCf]);
+
+  // Build statement tree with proper grouping (works for both single-month and series views)
+  const statementTree = useMemo(() => {
+    if (statementRows.length === 0) return null;
+    
+    // For series view, use series columns; for single-month, use CF columns
+    const columnKeys = useSeries && seriesData 
+      ? seriesData.columns // ["start", "2025-09", "2025-10", ..., "end"]
+      : columns.slice(1); // Skip first column
+    
+    const tree = buildStatementTree(statementRows, {
+      pathAccessor: (row) => row.account_path || row.account_name || "",
+      accountIdAccessor: (row) => row.account_id,
+      columnKeys,
+    });
+    
+    return tree;
+  }, [statementRows, columns, useSeries, seriesData]);
+
+  // Flatten tree for display (includes subtotals) - works for both single-month and series views
+  const displayRows = useMemo(() => {
+    if (!statementTree) return [];
+    
+    // Get column keys for computed rows
+    const columnKeys = useSeries && seriesData 
+      ? seriesData.columns // ["start", "2025-09", "2025-10", ..., "end"]
+      : columns.slice(1); // Skip first column
+    
+    const flattened = flattenStatementTree(statementTree, {
+      includeSubtotals: true,
+      includeStatementTotals: true,
+      indentPerLevel: 16,
+      statementType: "cf",
+      columnKeys,
+    });
+    
+    return flattened;
+  }, [statementTree, useSeries, seriesData, columns]);
+
+  // Column model: for series view, we need both key (for value lookup) and label (for display)
+  type ColumnModel = { key: string; label: string };
+  
+  const displayColumns: ColumnModel[] = useMemo(() => {
+    if (useSeries && seriesData) {
+      // Series view: map raw keys to display labels
+      return [
+        { key: "account", label: "Account" }, // First column is always Account
+        ...seriesData.columns.map(col => {
+          if (col === "start") return { key: "start", label: "Start" };
+          if (col === "end") return { key: "end", label: "End" };
+          // Format month: "2025-09" -> "Sep 2025"
+          const [year, month] = col.split("-");
+          const monthNum = parseInt(month, 10);
+          const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+          return { key: col, label: `${monthNames[monthNum - 1]} ${year}` };
+        })
+      ];
+    }
+    // Single-month view: use column titles as both key and label
+    return columns.map((col, idx) => ({
+      key: idx === 0 ? "account" : col || `col${idx}`,
+      label: col || (idx === 0 ? "Line" : ""),
+    }));
+  }, [useSeries, seriesData, columns]);
 
   // Extract table rendering to avoid deeply nested JSX
   function renderTable() {
-    if (rows.length === 0) {
-      return <div className="text-sm text-slate-700">No rows returned.</div>;
-    }
-    if (!hierarchyTree) {
-      return <div className="text-sm text-slate-700">Building hierarchy...</div>;
-    }
     return (
-      <HierarchicalReportTable
-        tree={hierarchyTree}
-        columns={columns}
-        renderValue={(node, colKey) => {
-          const val = node.values?.[colKey];
-          return val != null ? money(String(val)) : "—";
-        }}
-        formatMoney={(val) => (val != null ? money(String(val)) : "—")}
-        showGrouped={showGrouped}
-        onToggleGroup={(key) => {
-          setCollapsedKeys((prev) => {
-            const next = new Set(prev);
-            if (next.has(key)) next.delete(key);
-            else next.add(key);
-            return next;
-          });
-        }}
-        collapsedGroups={collapsedKeys}
-      />
+      <>
+        {/* Conditional rendering based on tree and displayRows state */}
+        {!statementTree ? (
+          <div className="text-sm text-slate-700">Building hierarchy...</div>
+        ) : displayRows.length === 0 ? (
+          <div className="text-sm text-slate-700">No display rows generated.</div>
+        ) : (
+          <StatementTable
+            rows={displayRows}
+            columns={displayColumns}
+            formatMoney={(val) => {
+              if (val == null || !Number.isFinite(val)) return "—";
+              const absValue = Math.abs(val);
+              const formatted = absValue.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              });
+              return val < 0 ? `(${formatted})` : formatted;
+            }}
+          />
+        )}
+      </>
     );
   }
 
@@ -368,17 +252,6 @@ export default function CashFlowPage() {
               >
                 {showRaw ? "Hide raw JSON" : "Show raw JSON"}
               </button>
-              {!useSeries && raw && hierarchyTree && (
-                <label className="inline-flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={showGrouped}
-                    onChange={(e) => setShowGrouped(e.target.checked)}
-                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="text-slate-700">Show grouped view</span>
-                </label>
-              )}
               {raw?.reportUrl && (
                 <a className={ui.linkBtn} href={raw.reportUrl} target="_blank" rel="noreferrer">
                   Open QBO report →
@@ -400,26 +273,21 @@ export default function CashFlowPage() {
 
         {!showRaw && (useSeries ? seriesData : raw) && (
           <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-            {useSeries && seriesData ? (
-              <div>
-                <div className="mb-3 text-xs text-slate-600">
-                  Multi-month view: {seriesData.months.length} month(s) • Start = 0 (flow statement), End = sum of months
-                </div>
-                <SeriesTable data={seriesData} reportType="cf" from={from} to={to} />
+            {useSeries && seriesData && (
+              <div className="mb-3 text-xs text-slate-600">
+                Multi-month view: {seriesData.months.length} month(s) • Start = 0 (flow statement), End = sum of months
               </div>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
-                  <div className="text-sm font-semibold text-slate-900">Report</div>
-                  <div className="text-xs text-slate-600">
-                    Basis: <span className="font-semibold text-slate-900">{cf?.Header?.ReportBasis || "—"}</span> •
-                    Currency: <span className="font-semibold text-slate-900">{cf?.Header?.Currency || "—"}</span>
-                  </div>
-                </div>
-
-                {renderTable()}
-              </>
             )}
+            {!useSeries && raw && (
+              <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+                <div className="text-sm font-semibold text-slate-900">Report</div>
+                <div className="text-xs text-slate-600">
+                  Basis: <span className="font-semibold text-slate-900">{cf?.Header?.ReportBasis || "—"}</span> •
+                  Currency: <span className="font-semibold text-slate-900">{cf?.Header?.Currency || "—"}</span>
+                </div>
+              </div>
+            )}
+            {renderTable()}
           </div>
         )}
       </main>

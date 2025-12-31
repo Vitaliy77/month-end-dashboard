@@ -1023,3 +1023,491 @@ routes.post("/runs/month-end/qbo", async (req, res) => {
     return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
+
+// -------------------------
+// Accruals routes
+// -------------------------
+import {
+  detectAccrualCandidates,
+  type AccrualCandidate,
+} from "./accruals/detection.js";
+import {
+  saveAccrualCandidates,
+  getAccrualCandidates,
+  getAccrualCandidateById,
+  approveAccrualCandidate,
+  getAccrualHistory,
+} from "./accruals/store.js";
+import { pushAccrualToQbo } from "./accruals/qboPush.js";
+import {
+  getAccrualRules,
+  saveAccrualRules,
+  resetAccrualRulesToDefaults,
+  type AccrualRule,
+} from "./accruals/rulesStore.js";
+import { qboFetchForOrg } from "./lib/qboFetchForOrg.js";
+
+// Helper function for dry-run (needs to be accessible)
+async function findOrCreateAccrualLiabilityAccount(orgId: string): Promise<string> {
+  const { getValidQboConnection, qboApiBase } = await import("./lib/qboFetchForOrg.js");
+  try {
+    const conn = await getValidQboConnection(orgId);
+    const base = qboApiBase(conn.realm_id);
+
+    // Try to find existing Accrued Liabilities account
+    const queryUrl = `${base}/query?query=SELECT * FROM Account WHERE AccountType = 'Other Current Liability' AND Name = 'Accrued Liabilities' MAXRESULTS 1`;
+    const resp = await fetch(queryUrl, {
+      headers: {
+        Authorization: `Bearer ${conn.access_token}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (resp.ok) {
+      const accounts = await resp.json();
+      if (accounts.QueryResponse?.Account?.[0]?.Id) {
+        return accounts.QueryResponse.Account[0].Id;
+      }
+    }
+
+    // If not found, try Accounts Payable
+    const apQueryUrl = `${base}/query?query=SELECT * FROM Account WHERE AccountType = 'Accounts Payable' MAXRESULTS 1`;
+    const apResp = await fetch(apQueryUrl, {
+      headers: {
+        Authorization: `Bearer ${conn.access_token}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (apResp.ok) {
+      const apAccounts = await apResp.json();
+      if (apAccounts.QueryResponse?.Account?.[0]?.Id) {
+        return apAccounts.QueryResponse.Account[0].Id;
+      }
+    }
+
+    throw new Error(
+      "No Accrued Liabilities or Accounts Payable account found. Please create one in QBO."
+    );
+  } catch (error: any) {
+    console.warn(`[accruals] Could not find liability account: ${error?.message}`);
+    throw error;
+  }
+}
+
+// Detect/recompute accrual candidates
+routes.post("/accruals/detect", async (req, res) => {
+  try {
+    const orgId = String(req.body?.orgId || "");
+    const from = String(req.body?.from || "");
+    const to = String(req.body?.to || "");
+    const debug = req.query.debug === "1" || req.body?.debug === true;
+
+    if (!orgId || !from || !to) {
+      return res.status(400).json({ ok: false, error: "Missing orgId/from/to" });
+    }
+
+    console.log(`[accruals] Detecting candidates for org ${orgId}, period ${from} to ${to}${debug ? " (debug mode)" : ""}`);
+
+    // Load rules for this org
+    const rules = await getAccrualRules(orgId);
+
+    // Run detection with rules
+    const result = await detectAccrualCandidates(orgId, from, to, rules, debug);
+
+    // Save to database
+    await saveAccrualCandidates(orgId, from, to, result.candidates);
+
+    return res.json({
+      ok: true,
+      orgId,
+      from,
+      to,
+      candidatesCount: result.candidates.length,
+      candidates: result.candidates,
+      debug: result.debug,
+    });
+  } catch (e: any) {
+    console.error("POST /accruals/detect failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Get accrual candidates for a period
+routes.get("/accruals/candidates", async (req, res) => {
+  try {
+    const orgId = String(req.query.orgId || "");
+    const from = String(req.query.from || "");
+    const to = String(req.query.to || "");
+
+    if (!orgId || !from || !to) {
+      return res.status(400).json({ ok: false, error: "Missing orgId/from/to" });
+    }
+
+    const candidates = await getAccrualCandidates(orgId, from, to);
+
+    // Parse explanation JSON
+    const candidatesWithExplanation = candidates.map((c) => ({
+      ...c,
+      explanation: JSON.parse(c.explanation_json || "{}"),
+    }));
+
+    return res.json({
+      ok: true,
+      orgId,
+      from,
+      to,
+      candidates: candidatesWithExplanation,
+    });
+  } catch (e: any) {
+    console.error("GET /accruals/candidates failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Approve or reject a candidate
+routes.post("/accruals/:candidateId/approve", async (req, res) => {
+  try {
+    const candidateId = String(req.params.candidateId || "");
+    const orgId = String(req.body?.orgId || "");
+    const decision = String(req.body?.decision || "").toLowerCase();
+    const approvedBy = String(req.body?.approvedBy || "");
+    const notes = String(req.body?.notes || "");
+
+    if (!candidateId || !orgId) {
+      return res.status(400).json({ ok: false, error: "Missing candidateId/orgId" });
+    }
+
+    if (decision !== "approved" && decision !== "rejected") {
+      return res.status(400).json({ ok: false, error: "Decision must be 'approved' or 'rejected'" });
+    }
+
+    await approveAccrualCandidate(candidateId, orgId, decision, approvedBy || undefined, notes || undefined);
+
+    return res.json({
+      ok: true,
+      candidateId,
+      decision,
+    });
+  } catch (e: any) {
+    console.error("POST /accruals/:candidateId/approve failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Push approved accrual to QBO
+routes.post("/accruals/:candidateId/push", async (req, res) => {
+  try {
+    const candidateId = String(req.params.candidateId || "");
+    const orgId = String(req.body?.orgId || "");
+    const dryRun = req.query.dryRun === "1" || req.body?.dryRun === true;
+
+    if (!candidateId || !orgId) {
+      return res.status(400).json({ ok: false, error: "Missing candidateId/orgId" });
+    }
+
+    // Get candidate
+    const candidate = await getAccrualCandidateById(candidateId, orgId);
+
+    if (!candidate) {
+      return res.status(404).json({ ok: false, error: "Candidate not found" });
+    }
+
+    if (candidate.status !== "approved") {
+      return res.status(400).json({ ok: false, error: "Candidate must be approved before pushing" });
+    }
+
+    // Dry run: return the payload without posting
+    if (dryRun) {
+      const explanation = JSON.parse(candidate.explanation_json || "{}");
+      const liabilityAccountId = await findOrCreateAccrualLiabilityAccount(orgId).catch(() => "ACCRUED_LIABILITIES_ACCOUNT_ID");
+      
+      const journalEntry = {
+        TxnDate: candidate.period_to_date,
+        PrivateNote: `Accrual: ${candidate.account_name}${candidate.vendor_name ? ` - ${candidate.vendor_name}` : ""}. ${explanation.reason || ""}`,
+        Line: [
+          {
+            Id: "0",
+            Description: `Accrual for ${candidate.account_name}`,
+            Amount: candidate.expected_amount,
+            DetailType: "JournalEntryLineDetail",
+            JournalEntryLineDetail: {
+              PostingType: "Debit",
+              AccountRef: {
+                value: candidate.account_id,
+                name: candidate.account_name,
+              },
+            },
+          },
+          {
+            Id: "1",
+            Description: `Accrual liability for ${candidate.account_name}`,
+            Amount: candidate.expected_amount,
+            DetailType: "JournalEntryLineDetail",
+            JournalEntryLineDetail: {
+              PostingType: "Credit",
+              AccountRef: {
+                value: liabilityAccountId,
+                name: "Accrued Liabilities",
+              },
+            },
+          },
+        ],
+      };
+
+      return res.json({
+        ok: true,
+        dryRun: true,
+        candidateId,
+        journalEntry,
+        message: "Dry run - Journal Entry payload generated but not posted to QBO",
+      });
+    }
+
+    const result = await pushAccrualToQbo(orgId, candidate);
+
+    return res.json({
+      ok: result.success,
+      candidateId,
+      journalEntryId: result.journalEntryId,
+      error: result.error,
+    });
+  } catch (e: any) {
+    console.error("POST /accruals/:candidateId/push failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Get accrual history
+routes.get("/accruals/history", async (req, res) => {
+  try {
+    const orgId = String(req.query.orgId || "");
+    const limit = Number(req.query.limit || 50);
+
+    if (!orgId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId" });
+    }
+
+    const history = await getAccrualHistory(orgId, limit);
+
+    // Parse explanation JSON
+    const historyWithExplanation = history.map((item) => ({
+      ...item,
+      explanation: JSON.parse(item.explanation_json || "{}"),
+    }));
+
+    return res.json({
+      ok: true,
+      orgId,
+      history: historyWithExplanation,
+    });
+  } catch (e: any) {
+    console.error("GET /accruals/history failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Get accrual rules for an org
+routes.get("/accruals/rules", async (req, res) => {
+  try {
+    const orgId = String(req.query.orgId || "");
+    if (!orgId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId" });
+    }
+
+    const rules = await getAccrualRules(orgId);
+    return res.json({ ok: true, orgId, rules });
+  } catch (e: any) {
+    console.error("GET /accruals/rules failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Save accrual rules for an org
+routes.post("/accruals/rules", async (req, res) => {
+  try {
+    const orgId = String(req.body?.orgId || "");
+    if (!orgId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId" });
+    }
+
+    const rules = await saveAccrualRules(orgId, {
+      lookback_months: req.body?.lookback_months,
+      min_amount: req.body?.min_amount,
+      confidence_threshold: req.body?.confidence_threshold,
+      min_recurrence_count: req.body?.min_recurrence_count,
+      excluded_accounts: req.body?.excluded_accounts,
+      excluded_vendors: req.body?.excluded_vendors,
+      include_accounts: req.body?.include_accounts,
+    });
+
+    return res.json({ ok: true, orgId, rules });
+  } catch (e: any) {
+    console.error("POST /accruals/rules failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Reset accrual rules to defaults
+routes.post("/accruals/rules/reset", async (req, res) => {
+  try {
+    const orgId = String(req.body?.orgId || "");
+    if (!orgId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId" });
+    }
+
+    const rules = await resetAccrualRulesToDefaults(orgId);
+    return res.json({ ok: true, orgId, rules });
+  } catch (e: any) {
+    console.error("POST /accruals/rules/reset failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Get diagnostics (data availability snapshot)
+routes.get("/accruals/diagnostics", async (req, res) => {
+  try {
+    const orgId = String(req.query.orgId || "");
+    if (!orgId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId" });
+    }
+
+    // Calculate last 6 months periods
+    const now = new Date();
+    const periods: Array<{ from: string; to: string }> = [];
+    for (let i = 0; i < 6; i++) {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
+      periods.push({
+        from: monthStart.toISOString().slice(0, 10),
+        to: monthEnd.toISOString().slice(0, 10),
+      });
+    }
+
+    // Fetch P&L for the most recent period to get account/vendor data
+    const mostRecentPeriod = periods[0];
+    let accountVendorData: Array<{ accountId: string; accountName: string; vendorName: string | null; amount: number }> = [];
+
+    try {
+      const pnl = await qboFetchForOrg(orgId, "/reports/ProfitAndLoss", {
+        start_date: mostRecentPeriod.from,
+        end_date: mostRecentPeriod.to,
+      });
+
+      // Extract expense accounts (simplified version)
+      const expenses = extractExpenseAccountsForDiagnostics(pnl);
+      accountVendorData = expenses
+        .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+        .slice(0, 10)
+        .map((e) => ({
+          accountId: e.accountId,
+          accountName: e.accountName,
+          vendorName: e.vendorName,
+          amount: e.amount,
+        }));
+    } catch (error: any) {
+      console.warn(`[accruals] Could not fetch P&L for diagnostics: ${error?.message}`);
+    }
+
+    return res.json({
+      ok: true,
+      orgId,
+      last_6_months_periods: periods,
+      top_accounts_vendors: accountVendorData,
+      summary: {
+        periods_available: periods.length,
+        accounts_found: accountVendorData.length,
+        total_amount: accountVendorData.reduce((sum, a) => sum + Math.abs(a.amount), 0),
+      },
+    });
+  } catch (e: any) {
+    console.error("GET /accruals/diagnostics failed:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Helper function for diagnostics
+function extractExpenseAccountsForDiagnostics(pnl: any): Array<{
+  accountId: string;
+  accountName: string;
+  vendorName: string | null;
+  amount: number;
+}> {
+  const expenses: Array<{
+    accountId: string;
+    accountName: string;
+    vendorName: string | null;
+    amount: number;
+  }> = [];
+  const accountMap = new Map<string, { accountId: string; accountName: string; vendorName: string | null; amount: number }>();
+
+  function processRow(row: any, path: string[] = []) {
+    if (!row) return;
+
+    const cols = row.ColData || [];
+    if (!Array.isArray(cols) || cols.length === 0) {
+      if (row.Rows?.Row) {
+        for (const child of row.Rows.Row) {
+          processRow(child, path);
+        }
+      }
+      return;
+    }
+
+    const accountName = cols[0]?.value || "";
+    const accountId = cols[0]?.id;
+    const amount = parseAmountForDiagnostics(cols[cols.length - 1]?.value);
+
+    if (accountId && amount < 0 && Math.abs(amount) > 10) {
+      if (!accountMap.has(accountId)) {
+        accountMap.set(accountId, {
+          accountId,
+          accountName: path.length > 0 ? path.join(" / ") + " / " + accountName : accountName,
+          vendorName: extractVendorNameForDiagnostics(accountName),
+          amount: 0,
+        });
+      }
+      const acc = accountMap.get(accountId)!;
+      acc.amount += Math.abs(amount);
+    }
+
+    if (row.Rows?.Row && Array.isArray(row.Rows.Row)) {
+      const nextPath = accountName && accountName.trim() ? [...path, accountName] : path;
+      for (const child of row.Rows.Row) {
+        processRow(child, nextPath);
+      }
+    }
+  }
+
+  if (pnl?.Rows?.Row && Array.isArray(pnl.Rows.Row)) {
+    for (const row of pnl.Rows.Row) {
+      processRow(row);
+    }
+  }
+
+  return Array.from(accountMap.values());
+}
+
+function parseAmountForDiagnostics(value: any): number {
+  if (value == null) return 0;
+  const s = String(value).trim();
+  if (!s) return 0;
+  const negByParens = /^\(.*\)$/.test(s);
+  const cleaned = s.replace(/[(),$]/g, "").replace(/,/g, "").trim();
+  if (!cleaned) return 0;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return 0;
+  return negByParens ? -n : n;
+}
+
+function extractVendorNameForDiagnostics(accountName: string): string | null {
+  const vendorPatterns = [
+    /^(.+?)\s+(Services|Inc|LLC|Corp|Ltd|Company)/i,
+    /^(.+?)\s+-\s+/,
+  ];
+  for (const pattern of vendorPatterns) {
+    const match = accountName.match(pattern);
+    if (match) return match[1].trim();
+  }
+  return null;
+}

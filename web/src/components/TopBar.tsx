@@ -29,18 +29,21 @@ function NavLink({
     <Link
       href={href}
       className={[
-        // Same size buttons
-        "h-10 min-w-[150px] px-4",
+        // Base sizing with padding for scale transform (20% smaller than original)
+        "h-10 min-w-[113px] px-2.5",
         "inline-flex items-center justify-center",
         "rounded-2xl text-sm font-semibold",
         "border shadow-sm backdrop-blur",
-        "transition-transform transition-colors duration-150 will-change-transform",
-        // +10% on hover and on press
-        "hover:scale-110 active:scale-110",
-        "focus:outline-none focus:ring-4 focus:ring-blue-200",
+        // Smooth transitions for transform and colors
+        "transition-all duration-200 ease-out",
+        "will-change-transform",
+        // Scale 1.2 on hover (20% growth) with transform to avoid layout jitter
+        "hover:scale-125 active:scale-110",
+        // Focus styles for accessibility
+        "focus:outline-none focus:ring-4 focus:ring-blue-300 focus:ring-offset-2",
         active
-          ? "border-blue-300 bg-white text-slate-900 shadow"
-          : "border-slate-200/70 bg-white/70 text-slate-800 hover:bg-white hover:shadow",
+          ? "border-blue-400 bg-white text-slate-900 shadow-md"
+          : "border-slate-200/80 bg-white/80 text-slate-800 hover:bg-white hover:shadow-md",
       ].join(" ")}
       aria-current={active ? "page" : undefined}
     >
@@ -59,42 +62,28 @@ export default function TopBar({ children, showNav = true }: Props) {
     { href: "/bs", label: "Balance Sheet" },
     { href: "/pnl", label: "P&L" },
     { href: "/cf", label: "Cash Flow" },
+    { href: "/accruals", label: "Accruals" },
   ];
 
-  const orgId = state.orgId?.trim() || "";
-  const orgName = state.orgName?.trim() || "";
-
-  const orgLine = orgId
-    ? orgName
-      ? `orgId: ${orgId} • ${orgName}`
-      : `orgId: ${orgId}`
-    : "orgId: —";
-
-  const from = state.from || "—";
-  const to = state.to || "—";
-
   return (
-    <div className="sticky top-0 z-50 border-b border-slate-200 bg-sky-50/90 backdrop-blur">
-      <div className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-2">
-        <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap">
-          {/* Brand + context */}
-          <div className="flex flex-col pr-2">
-            <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">
+    <div className="sticky top-0 z-50 border-b border-blue-300/30 bg-blue-600/95 backdrop-blur shadow-md">
+      <div className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4">
+          {/* Brand */}
+          <div className="flex-shrink-0">
+            <div className="text-sm font-extrabold uppercase tracking-[.18em] text-white">
               Month-End Checker
             </div>
-            <div className="text-xs text-slate-600">
-              {orgLine} • Period: {from} → {to}
-              {process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_BUILD_ID && (
-                <span className="ml-2 text-slate-400 font-mono">
-                  Build: {process.env.NEXT_PUBLIC_BUILD_ID}
-                </span>
-              )}
-            </div>
+            {process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_BUILD_ID && (
+              <div className="text-xs text-blue-100 font-mono mt-0.5">
+                Build: {process.env.NEXT_PUBLIC_BUILD_ID}
+              </div>
+            )}
           </div>
 
-          {/* Nav */}
+          {/* Nav - responsive wrapping with proper spacing */}
           {showNav && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
               {links.map((l) => (
                 <NavLink
                   key={l.href}
@@ -108,9 +97,9 @@ export default function TopBar({ children, showNav = true }: Props) {
 
           {/* Right side slot */}
           {children ? (
-            <div className="ml-auto flex items-center gap-2">{children}</div>
+            <div className="flex items-center gap-2 flex-shrink-0 sm:ml-auto">{children}</div>
           ) : (
-            <div className="ml-auto" />
+            <div className="sm:ml-auto" />
           )}
         </div>
       </div>
