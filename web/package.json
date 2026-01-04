@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --webpack -p 3011",
     "build": "rm -rf .next && next build",
-    "start": "next start -p $PORT -H 0.0.0.0",
-    "prestart": "test -d node_modules || npm ci",
+    "start": "node ./node_modules/next/dist/bin/next start -p $PORT -H 0.0.0.0",
+    "prestart": "test -x node_modules/.bin/next || npm ci",
     "build:ensure": "rm -rf .next && (next build && node -e \"process.exit(require(\\\"fs\\\").existsSync(\\\".next/server/pages-manifest.json\\\")?0:1)\" || (echo \"Retrying with --debug...\" && next build --debug))"
   },
   "dependencies": {
