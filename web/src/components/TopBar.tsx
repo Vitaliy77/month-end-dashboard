@@ -29,16 +29,16 @@ function NavLink({
     <Link
       href={href}
       className={[
-        // Base sizing with padding for scale transform (20% smaller than original)
-        "h-10 min-w-[113px] px-2.5",
+        // Base sizing (~10% smaller)
+        "h-9 min-w-[135px] px-3",
         "inline-flex items-center justify-center",
         "rounded-2xl text-sm font-semibold",
         "border shadow-sm backdrop-blur",
-        // Smooth transitions for transform and colors
-        "transition-all duration-200 ease-out",
-        "will-change-transform",
-        // Scale 1.2 on hover (20% growth) with transform to avoid layout jitter
-        "hover:scale-125 active:scale-110",
+        // Smooth transitions for transform
+        "transition-transform duration-200 ease-out",
+        "transform-gpu origin-center will-change-transform",
+        // Scale on hover/active with transform to avoid layout jitter
+        "hover:scale-[1.2] active:scale-[1.08]",
         // Focus styles for accessibility
         "focus:outline-none focus:ring-4 focus:ring-blue-300 focus:ring-offset-2",
         active
@@ -54,15 +54,14 @@ function NavLink({
 
 export default function TopBar({ children, showNav = true }: Props) {
   const pathname = usePathname() || "/";
-  const { state, withParams } = useOrgPeriod();
+  const { withParams } = useOrgPeriod();
 
   const links = [
     { href: "/", label: "Home" },
-    { href: "/tb", label: "Trial Balance" },
-    { href: "/bs", label: "Balance Sheet" },
-    { href: "/pnl", label: "P&L" },
-    { href: "/cf", label: "Cash Flow" },
     { href: "/accruals", label: "Accruals" },
+    { href: "/recon", label: "Recon" },
+    { href: "/reports", label: "Reports" },
+    { href: "/rules", label: "Rules" },
   ];
 
   return (

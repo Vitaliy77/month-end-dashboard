@@ -77,26 +77,30 @@ app.use(
 );
 
 // Health check
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, service: "month-end-dashboard-api" });
+app.get("/api/health", (req, res) => {
+  console.log("[HEALTH_HIT]", { pid: process.pid, cwd: process.cwd() });
+  res.status(200).json({
+    ok: true,
+    service: "month-end-dashboard-api",
+    buildStamp: "api-2026-01-04-B",
+    pid: process.pid,
+    cwd: process.cwd(),
+  });
 });
 
 // Mount all API routes under /api
 app.use("/api", routes);
 
-// Initialize database schema on startup
+// Initialize database schema in background (don't block server startup)
 initSchema().catch((err) => {
   console.error("Failed to initialize database schema:", err);
-  process.exit(1);
+  // Don't exit - let server continue running
 });
 
-// Bind host:
-// - Local dev: 127.0.0.1 works
-// - Deployments: use 0.0.0.0 so the platform can route traffic
-const host = (process.env.HOST || (ENV as any).HOST || "0.0.0.0") as string;
+// Server startup - always bind, unconditional
+const port = Number(process.env.PORT ?? 8080);
+const host = process.env.HOST ?? "0.0.0.0";
 
-console.log("Starting API with ENV.PORT =", ENV.PORT, "host =", host);
-
-app.listen(ENV.PORT, host, () => {
-  console.log(`API listening on http://${host}:${ENV.PORT}`);
+app.listen(port, host, () => {
+  console.log("API listening on", { host, port });
 });

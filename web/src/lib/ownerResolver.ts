@@ -12,11 +12,24 @@ export type ResolvedOwner = {
 };
 
 /**
+ * Check if an account type is considered P&L (Profit & Loss).
+ * Treats expenses and income as P&L for ownership matching.
+ */
+function isPnLType(type?: string): boolean {
+  return (
+    type === "pnl" ||
+    type === "income" ||
+    type === "expense" ||
+    type === "expenses"
+  );
+}
+
+/**
  * Find the best matching account owner for a finding.
  * 
  * Matching logic:
- * - Same account type (pnl/bs/tb) if present
- * - If rule has "Account Name Contains", match substring against finding account path/name (case-insensitive)
+ * - Account type matching: P&L owners match income/expense findings; BS/TB use strict matching
+ * - If rule has "Account Name Contains", match substring against finding account path/name (case-insensitive, normalized)
  * - If rule has account number, match that too when available
  * - Pick the most specific match (longest "contains" string wins)
  */
@@ -53,8 +66,17 @@ export function resolveOwnerForFinding(
     if (!owner.enabled) continue;
 
     // Check account type match
-    if (owner.account_type && owner.account_type !== accountType) {
-      continue;
+    // P&L owners match income/expense findings; BS/TB use strict matching
+    if (owner.account_type) {
+      if (owner.account_type === "pnl") {
+        if (!isPnLType(accountType)) {
+          continue;
+        }
+      } else {
+        if (owner.account_type !== accountType) {
+          continue;
+        }
+      }
     }
 
     let matches = false;
@@ -67,12 +89,13 @@ export function resolveOwnerForFinding(
     }
 
     // Match by account name contains (specificity = length of contains string)
+    // Normalize strings to prevent silent failures due to capitalization, separators, whitespace
     if (owner.account_name_contains) {
-      const containsLower = owner.account_name_contains.toLowerCase();
-      const nameLower = accountName.toLowerCase();
-      if (nameLower.includes(containsLower)) {
+      const haystack = (accountName || "").toLowerCase().trim();
+      const needle = (owner.account_name_contains || "").toLowerCase().trim();
+      if (needle && haystack.includes(needle)) {
         matches = true;
-        specificity = Math.max(specificity, containsLower.length);
+        specificity = Math.max(specificity, needle.length);
       }
     }
 

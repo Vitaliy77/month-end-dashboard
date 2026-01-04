@@ -23,6 +23,7 @@ import {
 } from "@/lib/api";
 import { resolveOwnerForFinding } from "@/lib/ownerResolver";
 import { useOrgPeriod } from "@/components/OrgPeriodProvider";
+import Link from "next/link";
 
 type LeftTab = "setup" | "rules" | "account-owners";
 
@@ -52,8 +53,15 @@ function severityStyle(sev?: string) {
 function safeParseJSON<T>(s: string | null): T | null {
   if (!s) return null;
   try {
+    // Guard against extremely large strings that might indicate corruption
+    if (s.length > 100000) {
+      console.warn("[HomePage] localStorage value too large, clearing:", s.length);
+      return null;
+    }
     return JSON.parse(s) as T;
-  } catch {
+  } catch (e) {
+    // If parsing fails, return null (caller should handle cleanup if needed)
+    console.warn("[HomePage] Failed to parse localStorage:", e);
     return null;
   }
 }
@@ -173,8 +181,6 @@ export default function HomePage() {
 
   // ---- UI ----
   const [openFindingId, setOpenFindingId] = useState<string | null>(null);
-  const [leftOpen, setLeftOpen] = useState<boolean>(true);
-  const [leftTab, setLeftTab] = useState<LeftTab>("setup");
 
   const hasOrgId = useMemo(() => Boolean(orgId && orgId.trim().length > 0), [orgId]);
 
@@ -230,11 +236,19 @@ export default function HomePage() {
   useEffect(() => {
     (async () => {
       try {
-        const r: any = await listOrgs();
-        const list = r?.orgs ?? r?.data?.orgs ?? [];
-        setOrgs(asArray<Org>(list));
+        const resp = await listOrgs();
+        if (process.env.NODE_ENV === "development") {
+          console.log("[HomePage] listOrgs resp", resp);
+        }
+        if (resp.ok && Array.isArray(resp.orgs)) {
+          setOrgs(asArray<Org>(resp.orgs));
+        } else {
+          console.warn("[HomePage] listOrgs returned non-ok or invalid orgs:", resp);
+          setOrgs([]);
+        }
       } catch (e: any) {
-        console.error("Failed to load orgs:", e);
+        console.error("[HomePage] Failed to load orgs:", e);
+        setOrgs([]);
         // non-fatal
       }
     })();
@@ -306,6 +320,17 @@ export default function HomePage() {
         lastSavedHashRef.current = stableRulesSnapshot(saved);
         setRulesSource("local");
         return;
+      } else {
+        // If parsing failed, clear corrupted localStorage entry
+        try {
+          const raw = localStorage.getItem(RULES_STORAGE_KEY);
+          if (raw && (raw.length > 100000 || !raw.trim().startsWith("["))) {
+            console.warn("[HomePage] Clearing corrupted rules localStorage");
+            localStorage.removeItem(RULES_STORAGE_KEY);
+          }
+        } catch {
+          // Ignore errors during cleanup
+        }
       }
       // 3) empty means "use backend defaults"
       setRules([]);
@@ -391,9 +416,10 @@ export default function HomePage() {
 
       setStatus(`Org created ✅ (${newOrgId})`);
       try {
-        const rr: any = await listOrgs();
-        const list = rr?.orgs ?? rr?.data?.orgs ?? [];
-        setOrgs(asArray<Org>(list));
+        const rr = await listOrgs();
+        if (rr.ok && Array.isArray(rr.orgs)) {
+          setOrgs(asArray<Org>(rr.orgs));
+        }
       } catch {
         // ignore
       }
@@ -640,7 +666,7 @@ export default function HomePage() {
       setNetIncomeValue(null);
       setOpenFindingId(null);
 
-      const payload: any = { orgId, from, to };
+      const payload: any = { orgId, from, to, force: true }; // Always force recomputation when button is clicked
       if (useDraftRulesForRun) {
         const enabledRules = (rules || []).filter((r) => r.enabled !== false).map((r) => {
           const p: any = { ...(r.params || {}) };
@@ -677,17 +703,12 @@ export default function HomePage() {
       const list = r?.findings ?? r?.data?.findings ?? [];
       setFindings(asArray<Finding>(list));
 
-      // After successful run, immediately re-fetch to ensure persistence
-      try {
-        const savedRun = await getMonthEndRun(orgId, from, to);
-        if (savedRun.found) {
-          setStatus("Month-end completed ✅ (saved)");
-        } else {
-          setStatus("Month-end completed ✅ (not found after save)");
-        }
-      } catch (e: any) {
-        console.error("Failed to verify run save:", e);
-        setStatus("Month-end completed ✅ (save verification failed)");
+      // Update status based on whether it was forced (recomputed) or loaded from saved
+      const wasForced = r?.wasForced === true;
+      if (wasForced) {
+        setStatus("Recomputed just now ✅");
+      } else {
+        setStatus("Loaded last run ✅");
       }
     } catch (e: any) {
       setStatus(`Month-end failed: ${e?.message || String(e)}`);
@@ -712,914 +733,81 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      
-
-      <main className="mx-auto max-w-none px-3 sm:px-4 lg:px-6 py-6 space-y-5">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">
-              
-            </div>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">
-              
-            </h1>
-          </div>
-
-          {/* Global period controls (compact, finance-style) */}
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-[11px] font-extrabold uppercase tracking-[.12em] text-slate-500">
-                From
-              </label>
-              <input
-                type="date"
-                className={dateInputCls}
-                value={from}
-                onChange={(e) => setState({ from: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-extrabold uppercase tracking-[.12em] text-slate-500">
-                To
-              </label>
-              <input
-                type="date"
-                className={dateInputCls}
-                value={to}
-                onChange={(e) => setState({ to: e.target.value })}
-              />
-            </div>
-
-            <button
-              className={`${ui.btn} ${ui.btnGhost}`}
-              onClick={() => setLeftOpen((v) => !v)}
-              title={leftOpen ? "Hide Setup + Rules" : "Show Setup + Rules"}
-            >
-              {leftOpen ? "Hide" : "Setup / Rules"}
-            </button>
-          </div>
-        </div>
-
-        {/* Status */}
+      <main className="mx-auto w-full max-w-6xl px-6 py-6 space-y-5">
+        {/* Unified Top Card: From/To + Status + Actions */}
         <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-sm font-semibold text-slate-900">Status</div>
-            {process.env.NODE_ENV === "development" && (
-              <div className={`text-xs font-semibold px-2 py-1 rounded ${apiOnline ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                API: {apiOnline ? "OK" : "OFFLINE"}
-              </div>
-            )}
-          </div>
-          <div className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">{status || "—"}</div>
-          {process.env.NODE_ENV !== "production" && (
-            <div className="mt-2 text-xs text-slate-400 font-mono border-t border-slate-200 pt-2">
-              API_BASE={API_BASE}
-            </div>
-          )}
-        </div>
-
-        {/* Setup/Rules + Month-End Review */}
-        <div className={leftOpen ? "grid gap-4 lg:grid-cols-[420px_1fr]" : "grid gap-4"}>
-          {/* Left panel */}
-          {leftOpen && (
-            <section className="rounded-3xl border border-slate-200 bg-white/80 shadow-sm backdrop-blur p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-semibold text-slate-900">
-                  {leftTab === "setup"
-                    ? "Setup"
-                    : leftTab === "rules"
-                    ? "Rules"
-                    : "Account Ownership"}
-                </div>
-                <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1">
-                  <button
-                    className={`${ui.btn} ${leftTab === "setup" ? ui.btnPrimary : ui.btnGhost}`}
-                    onClick={() => setLeftTab("setup")}
-                  >
-                    Setup
-                  </button>
-                  <button
-                    className={`${ui.btn} ${leftTab === "rules" ? ui.btnPrimary : ui.btnGhost}`}
-                    onClick={() => setLeftTab("rules")}
-                  >
-                    Rules
-                  </button>
-                  <button
-                    className={`${ui.btn} ${leftTab === "account-owners" ? ui.btnPrimary : ui.btnGhost}`}
-                    onClick={() => setLeftTab("account-owners")}
-                  >
-                    Account Ownership
-                  </button>
-                </div>
-              </div>
-
-              {/* Setup tab */}
-              {leftTab === "setup" && (
-                <div className="mt-4 space-y-4">
-                  {/* Org */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                      Organization
-                    </div>
-
-                    <label className="block mt-3 text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                      Org name
-                    </label>
-                    <input
-                      className={inputCls}
-                      value={newOrgName}
-                      onChange={(e) => setNewOrgName(e.target.value)}
-                    />
-
-                    <button className={`${ui.btn} ${ui.btnPrimary} mt-3 w-full`} onClick={onCreateOrg}>
-                      Create org
-                    </button>
-
-                    <label className="block mt-4 text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                      Existing orgs
-                    </label>
-                    <select
-                      className={inputCls}
-                      value={orgId}
-                      onChange={(e) => {
-                        const nextOrgId = e.target.value;
-                        if (!nextOrgId) {
-                          setState({ orgId: "", orgName: "" });
-                          return;
-                        }
-                        const selected = orgs.find((o) => o.id === nextOrgId);
-                        setState({
-                          orgId: nextOrgId,
-                          orgName: selected?.name ?? "",
-                        });
-                      }}
-                    >
-                      {orgs.length === 0 ? (
-                        <option value="">No orgs loaded - Create an org to begin</option>
-                      ) : (
-                        orgs.map((o: any) => (
-                          <option key={o.id} value={o.id}>
-                            {o.name} ({o.id})
-                          </option>
-                        ))
-                      )}
-                    </select>
-
-                    {/* Small, readable confirmation */}
-                    {hasOrgId && (
-                      <div className="mt-3 text-xs text-slate-600">
-                        Selected:{" "}
-                        <span className="font-semibold text-slate-900">
-                          {orgName || "(no name)"} • {orgId}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* QBO */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                      QuickBooks
-                    </div>
-                    {hasOrgId ? (
-                      <a
-                        href={qboConnectUrl(orgId)}
-                        className={`${ui.btn} ${ui.btnGhost} mt-3 w-full`}
-                      >
-                        Connect QBO
-                      </a>
-                    ) : (
-                      <button
-                        className={`${ui.btn} ${ui.btnGhost} mt-3 w-full`}
-                        disabled={true}
-                        title="Select org first"
-                      >
-                        Connect QBO
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Rules tab */}
-              {leftTab === "rules" && (
-                <div className="mt-4 space-y-4">
-                  {/* Rules header */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                          Rules
-                        </div>
-                        <div className="mt-1 text-sm text-slate-700">
-                          Source:{" "}
-                          <span className="font-semibold text-slate-900">
-                            {rulesSource === "api"
-                              ? "Saved (API)"
-                              : rulesSource === "local"
-                              ? "Local fallback"
-                              : "Defaults"}
-                          </span>
-                          {rulesDirty && (
-                            <span className="ml-2 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-bold text-amber-900">
-                              Unsaved changes
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          className={`${ui.btn} ${ui.btnGhost}`}
-                          onClick={onResetRules}
-                          title="Reset (backend defaults apply)"
-                        >
-                          Reset
-                        </button>
-                        <button
-                          className={`${ui.btn} ${ui.btnGhost}`}
-                          onClick={onDiscardRuleChanges}
-                          disabled={!rulesDirty}
-                          title={!rulesDirty ? "No changes to discard" : "Discard unsaved changes"}
-                        >
-                          Discard
-                        </button>
-                        <button
-                          className={`${ui.btn} ${ui.btnPrimary}`}
-                          onClick={onSaveRules}
-                          disabled={!rulesDirty || rulesSaving || !hasOrgId}
-                          title={!hasOrgId ? "Select org first" : !rulesDirty ? "No changes" : "Save rules"}
-                        >
-                          {rulesSaving ? "Saving..." : "Save"}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <input
-                        id="useDraftRules"
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={useDraftRulesForRun}
-                        onChange={(e) => setUseDraftRulesForRun(e.target.checked)}
-                        disabled={!rulesDirty && (rules?.length ?? 0) === 0}
-                      />
-                      <label htmlFor="useDraftRules" className="text-sm text-slate-700">
-                        Run month-end using <span className="font-semibold">unsaved</span> changes
-                      </label>
-                    </div>
-                    <div className="mt-3">
-                      <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500 mb-2">
-                        Filter rules
-                      </div>
-                      <input
-                        className={smallInputCls}
-                        type="email"
-                        placeholder="Filter by owner email (e.g., your@email.com)"
-                        value={ownerFilterEmail}
-                        onChange={(e) => setOwnerFilterEmail(e.target.value.trim().toLowerCase())}
-                      />
-                      <div className="mt-1 text-xs text-slate-500">
-                        Enter email to show only rules assigned to that owner
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Add rule */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                      Add rule (basic)
-                    </div>
-                    <div className="mt-3 grid grid-cols-1 gap-3">
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                          Name
-                        </div>
-                        <input
-                          className={smallInputCls}
-                          value={newRuleName}
-                          onChange={(e) => setNewRuleName(e.target.value)}
-                          placeholder="e.g., Materials over $500"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Keyword
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newRuleKeyword}
-                            onChange={(e) => setNewRuleKeyword(e.target.value)}
-                            placeholder="e.g., materials"
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Threshold
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newRuleThreshold}
-                            onChange={(e) => setNewRuleThreshold(e.target.value)}
-                            inputMode="decimal"
-                            placeholder="100"
-                          />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Mode
-                          </div>
-                          <select
-                            className={smallInputCls}
-                            value={newRuleMode}
-                            onChange={(e) => setNewRuleMode(e.target.value as any)}
-                          >
-                            <option value="sum">Sum (total)</option>
-                            <option value="any">Any (single line)</option>
-                          </select>
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Severity
-                          </div>
-                          <select
-                            className={smallInputCls}
-                            value={newRuleSeverity}
-                            onChange={(e) => setNewRuleSeverity(e.target.value as any)}
-                          >
-                            <option value="low">Low</option>
-                            <option value="medium">Medium</option>
-                            <option value="warn">Warn</option>
-                            <option value="high">High</option>
-                            <option value="critical">Critical</option>
-                            <option value="info">Info</option>
-                          </select>
-                        </div>
-                      </div>
-                      <button className={`${ui.btn} ${ui.btnPrimary} w-full`} onClick={addRule}>
-                        Add rule
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Add variance rule */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                      Add variance rule (vs prior month)
-                    </div>
-                    <div className="mt-3 grid grid-cols-1 gap-3">
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                          Name
-                        </div>
-                        <input
-                          className={smallInputCls}
-                          value={newVarianceRuleName}
-                          onChange={(e) => setNewVarianceRuleName(e.target.value)}
-                          placeholder="e.g., Materials variance > 10%"
-                        />
-                      </div>
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                          Account Name Contains
-                        </div>
-                        <input
-                          className={smallInputCls}
-                          value={newVarianceAccountName}
-                          onChange={(e) => setNewVarianceAccountName(e.target.value)}
-                          placeholder="e.g., Materials, Rent, Utilities"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Abs Threshold ($)
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newVarianceAbsThreshold}
-                            onChange={(e) => setNewVarianceAbsThreshold(e.target.value)}
-                            inputMode="decimal"
-                            placeholder="e.g., 1000"
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Pct Threshold (%)
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newVariancePctThreshold}
-                            onChange={(e) => setNewVariancePctThreshold(e.target.value)}
-                            inputMode="decimal"
-                            placeholder="e.g., 10"
-                          />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Min Base Amount ($)
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newVarianceMinBase}
-                            onChange={(e) => setNewVarianceMinBase(e.target.value)}
-                            inputMode="decimal"
-                            placeholder="e.g., 500"
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Direction
-                          </div>
-                          <select
-                            className={smallInputCls}
-                            value={newVarianceDirection}
-                            onChange={(e) => setNewVarianceDirection(e.target.value as any)}
-                          >
-                            <option value="any">Any</option>
-                            <option value="increase">Increase only</option>
-                            <option value="decrease">Decrease only</option>
-                          </select>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                          Severity
-                        </div>
-                        <select
-                          className={smallInputCls}
-                          value={newVarianceSeverity}
-                          onChange={(e) => setNewVarianceSeverity(e.target.value as any)}
-                        >
-                          <option value="low">Low</option>
-                          <option value="medium">Medium</option>
-                          <option value="warn">Warn</option>
-                          <option value="high">High</option>
-                          <option value="critical">Critical</option>
-                        </select>
-                      </div>
-                      <button className={`${ui.btn} ${ui.btnPrimary} w-full`} onClick={addVarianceRule}>
-                        Add variance rule
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Rules list */}
-                  <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
-                    <div className="divide-y divide-slate-200">
-                      {(() => {
-                        const filteredRules = ownerFilterEmail
-                          ? (rules || []).filter(
-                              (r) =>
-                                r.owner_email?.toLowerCase().includes(ownerFilterEmail) ||
-                                r.owner_name?.toLowerCase().includes(ownerFilterEmail)
-                            )
-                          : rules || [];
-                        return filteredRules.length === 0 ? (
-                          <div className="p-4 text-sm text-slate-600">
-                            {ownerFilterEmail
-                              ? `No rules found for owner "${ownerFilterEmail}"`
-                              : "No custom rules loaded here. Backend defaults will still run."}
-                          </div>
-                        ) : (
-                          filteredRules.map((r) => (
-                          <div key={r.id} className="p-4">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-semibold text-slate-900 truncate">{r.name}</div>
-                                <div className="mt-1 text-xs text-slate-600">
-                                  <span className="font-bold">id:</span> {r.id}
-                                </div>
-                                {r.description && <div className="mt-1 text-sm text-slate-700">{r.description}</div>}
-                                {/* Owner fields */}
-                                {(() => {
-                                  const inheritedOwner = resolveInheritedOwnerForRule(r, accountOwners);
-                                  const displayOwner = r.owner_name || r.owner_email ? r : inheritedOwner;
-                                  return (
-                                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                                      <div>
-                                        <span className="text-slate-500">Owner:</span>{" "}
-                                        <span className="font-semibold text-slate-900">
-                                          {displayOwner?.owner_name || displayOwner?.owner_email || "(none)"}
-                                        </span>
-                                        {displayOwner?.owner_email && (
-                                          <a
-                                            href={`mailto:${displayOwner.owner_email}`}
-                                            className="ml-1 text-blue-600 hover:underline"
-                                            title={`Contact ${displayOwner.owner_name || displayOwner.owner_email}`}
-                                          >
-                                            📧
-                                          </a>
-                                        )}
-                                        {inheritedOwner && !r.owner_name && !r.owner_email && (
-                                          <span className="ml-1 inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-xs font-bold text-blue-900">
-                                            From Account Ownership
-                                          </span>
-                                        )}
-                                      </div>
-                                      {(displayOwner?.owner_role || r.owner_role) && (
-                                        <div>
-                                          <span className="text-slate-500">Role:</span>{" "}
-                                          <span className="font-semibold text-slate-900">
-                                            {displayOwner?.owner_role || r.owner_role}
-                                          </span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <select
-                                  className="h-9 rounded-xl border border-slate-300 bg-white px-2 text-sm"
-                                  value={(r.severity || "low") as any}
-                                  onChange={(e) => setRuleSeverity(r.id, e.target.value as RuleSeverity)}
-                                >
-                                  <option value="low">Low</option>
-                                  <option value="medium">Medium</option>
-                                  <option value="warn">Warn</option>
-                                  <option value="high">High</option>
-                                  <option value="critical">Critical</option>
-                                  <option value="info">Info</option>
-                                </select>
-                                <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                                  <input
-                                    type="checkbox"
-                                    checked={r.enabled !== false}
-                                    onChange={(e) => setRuleEnabled(r.id, e.target.checked)}
-                                  />
-                                  Enabled
-                                </label>
-                              </div>
-                            </div>
-                            {/* Owner fields editor */}
-                            <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-200 pt-3">
-                              <div>
-                                <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                                  Owner Name
-                                </div>
-                                <input
-                                  className={smallInputCls}
-                                  value={r.owner_name || ""}
-                                  onChange={(e) => {
-                                    setRules((prev) =>
-                                      prev.map((rule) =>
-                                        rule.id === r.id ? { ...rule, owner_name: e.target.value } : rule
-                                      )
-                                    );
-                                  }}
-                                  placeholder="e.g., John Doe"
-                                />
-                              </div>
-                              <div>
-                                <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                                  Owner Email
-                                </div>
-                                <input
-                                  className={smallInputCls}
-                                  type="email"
-                                  value={r.owner_email || ""}
-                                  onChange={(e) => {
-                                    setRules((prev) =>
-                                      prev.map((rule) =>
-                                        rule.id === r.id ? { ...rule, owner_email: e.target.value } : rule
-                                      )
-                                    );
-                                  }}
-                                  placeholder="e.g., john@example.com"
-                                />
-                              </div>
-                              <div>
-                                <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                                  Owner Role
-                                </div>
-                                <input
-                                  className={smallInputCls}
-                                  value={r.owner_role || ""}
-                                  onChange={(e) => {
-                                    setRules((prev) =>
-                                      prev.map((rule) =>
-                                        rule.id === r.id ? { ...rule, owner_role: e.target.value } : rule
-                                      )
-                                    );
-                                  }}
-                                  placeholder="e.g., Controller, AP, Payroll"
-                                />
-                              </div>
-                              <div>
-                                <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                                  Owner Notes
-                                </div>
-                                <input
-                                  className={smallInputCls}
-                                  value={r.owner_notes || ""}
-                                  onChange={(e) => {
-                                    setRules((prev) =>
-                                      prev.map((rule) =>
-                                        rule.id === r.id ? { ...rule, owner_notes: e.target.value } : rule
-                                      )
-                                    );
-                                  }}
-                                  placeholder="Optional notes"
-                                />
-                              </div>
-                            </div>
-                            {r.params && Object.keys(r.params).length > 0 && (
-                              <div className="mt-3 grid grid-cols-2 gap-3">
-                                {Object.entries(r.params).map(([k, v]) => {
-                                  // Handle account_selector specially
-                                  if (k === "account_selector" && typeof v === "object" && v !== null) {
-                                    const selector = v as any;
-                                    return (
-                                      <div key={k} className="col-span-2">
-                                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                                          Account Selector
-                                        </div>
-                                        <div className="mt-1 text-sm text-slate-700 space-y-1">
-                                          {selector.account_name_contains && (
-                                            <div>
-                                              <span className="text-slate-500">Name contains:</span>{" "}
-                                              <span className="font-semibold">{String(selector.account_name_contains)}</span>
-                                            </div>
-                                          )}
-                                          {selector.account_number && (
-                                            <div>
-                                              <span className="text-slate-500">Account #:</span>{" "}
-                                              <span className="font-semibold">{String(selector.account_number)}</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  }
-                                  return (
-                                    <div key={k}>
-                                      <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                                        {k}
-                                      </div>
-                                      <input
-                                        className={smallInputCls}
-                                        value={typeof v === "object" ? JSON.stringify(v) : String(v ?? "")}
-                                        onChange={(e) => {
-                                          const next = toNumberOrString(e.target.value);
-                                          setRuleParam(r.id, k, next);
-                                        }}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            <div className="mt-3 flex justify-end">
-                              <button className={`${ui.btn} ${ui.btnGhost}`} onClick={() => deleteRule(r.id)}>
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                          ))
-                        );
-                      })()}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Account Ownership tab */}
-              {leftTab === "account-owners" && (
-                <div className="mt-4 space-y-4">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                          Account Ownership
-                        </div>
-                        <div className="mt-1 text-sm text-slate-700">
-                          Assign owners to accounts. Rules will inherit owners unless explicitly set.
-                        </div>
-                      </div>
-                      <button
-                        className={`${ui.btn} ${ui.btnPrimary}`}
-                        onClick={onSaveAccountOwners}
-                        disabled={accountOwnersSaving || !hasOrgId}
-                        title={!hasOrgId ? "Select org first" : "Save account owners"}
-                      >
-                        {accountOwnersSaving ? "Saving..." : "Save"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Add account owner */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                      Add Account Owner
-                    </div>
-                    <div className="mt-3 grid grid-cols-1 gap-3">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Account Type
-                          </div>
-                          <select
-                            className={smallInputCls}
-                            value={newOwner.account_type || "pnl"}
-                            onChange={(e) =>
-                              setNewOwner({ ...newOwner, account_type: e.target.value as "tb" | "pnl" | "bs" })
-                            }
-                          >
-                            <option value="tb">Trial Balance</option>
-                            <option value="pnl">P&L</option>
-                            <option value="bs">Balance Sheet</option>
-                          </select>
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Account Number (optional)
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newOwner.account_number || ""}
-                            onChange={(e) => setNewOwner({ ...newOwner, account_number: e.target.value })}
-                            placeholder="e.g., 4000"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                          Account Name Contains (optional)
-                        </div>
-                        <input
-                          className={smallInputCls}
-                          value={newOwner.account_name_contains || ""}
-                          onChange={(e) => setNewOwner({ ...newOwner, account_name_contains: e.target.value })}
-                          placeholder="e.g., Product Income"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Owner Name
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newOwner.owner_name || ""}
-                            onChange={(e) => setNewOwner({ ...newOwner, owner_name: e.target.value })}
-                            placeholder="e.g., John Doe"
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Owner Email
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            type="email"
-                            value={newOwner.owner_email || ""}
-                            onChange={(e) => setNewOwner({ ...newOwner, owner_email: e.target.value })}
-                            placeholder="e.g., john@example.com"
-                          />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Owner Role (optional)
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newOwner.owner_role || ""}
-                            onChange={(e) => setNewOwner({ ...newOwner, owner_role: e.target.value })}
-                            placeholder="e.g., Controller"
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs font-extrabold uppercase tracking-[.12em] text-slate-500">
-                            Notes (optional)
-                          </div>
-                          <input
-                            className={smallInputCls}
-                            value={newOwner.notes || ""}
-                            onChange={(e) => setNewOwner({ ...newOwner, notes: e.target.value })}
-                            placeholder="Optional notes"
-                          />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={newOwner.enabled !== false}
-                          onChange={(e) => setNewOwner({ ...newOwner, enabled: e.target.checked })}
-                        />
-                        <label className="text-sm text-slate-700">Enabled</label>
-                      </div>
-                      <button className={`${ui.btn} ${ui.btnPrimary} w-full`} onClick={addAccountOwner}>
-                        Add Account Owner
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Account owners list */}
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-[.14em] text-slate-500">
-                      Account Owners ({accountOwners.length})
-                    </div>
-                    {accountOwnersLoading ? (
-                      <div className="mt-3 text-sm text-slate-600">Loading...</div>
-                    ) : accountOwnersError ? (
-                      <div className="mt-3 text-sm text-red-600">Error: {accountOwnersError}</div>
-                    ) : accountOwners.length === 0 ? (
-                      <div className="mt-3 text-sm text-slate-600">No account owners yet.</div>
-                    ) : (
-                      <div className="mt-3 space-y-3">
-                        {accountOwners.map((o) => (
-                          <div key={o.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-semibold text-slate-900">
-                                  {o.owner_name || o.owner_email || "(unnamed)"}
-                                </div>
-                                {o.owner_email && (
-                                  <a
-                                    href={`mailto:${o.owner_email}`}
-                                    className="mt-1 text-xs text-blue-600 hover:underline"
-                                  >
-                                    {o.owner_email}
-                                  </a>
-                                )}
-                                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                                  <div>
-                                    <span className="text-slate-500">Type:</span>{" "}
-                                    <span className="font-semibold text-slate-900 uppercase">{o.account_type}</span>
-                                  </div>
-                                  {o.account_number && (
-                                    <div>
-                                      <span className="text-slate-500">Account #:</span>{" "}
-                                      <span className="font-semibold text-slate-900">{o.account_number}</span>
-                                    </div>
-                                  )}
-                                  {o.account_name_contains && (
-                                    <div className="col-span-2">
-                                      <span className="text-slate-500">Name contains:</span>{" "}
-                                      <span className="font-semibold text-slate-900">{o.account_name_contains}</span>
-                                    </div>
-                                  )}
-                                  {o.owner_role && (
-                                    <div>
-                                      <span className="text-slate-500">Role:</span>{" "}
-                                      <span className="font-semibold text-slate-900">{o.owner_role}</span>
-                                    </div>
-                                  )}
-                                  <div>
-                                    <span className="text-slate-500">Status:</span>{" "}
-                                    <span
-                                      className={`font-semibold ${o.enabled ? "text-green-700" : "text-slate-500"}`}
-                                    >
-                                      {o.enabled ? "Enabled" : "Disabled"}
-                                    </span>
-                                  </div>
-                                </div>
-                                {o.notes && (
-                                  <div className="mt-2 text-xs text-slate-600">
-                                    <span className="text-slate-500">Notes:</span> {o.notes}
-                                  </div>
-                                )}
-                              </div>
-                              <button
-                                className={`${ui.btn} ${ui.btnGhost} text-red-600`}
-                                onClick={() => deleteAccountOwner(o.id)}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
-
-          {/* Month-End Review (hero) */}
-          <section className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-6">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left: From/To */}
+            <div className="flex flex-wrap items-end gap-3">
               <div>
-                <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">Month-End Review</div>
-                <div className="mt-1 text-xl font-semibold text-slate-900">Run checks and review findings</div>
+                <label className="block text-[11px] font-extrabold uppercase tracking-[.12em] text-slate-500">
+                  From
+                </label>
+                <input
+                  type="date"
+                  className={dateInputCls}
+                  value={from}
+                  onChange={(e) => setState({ from: e.target.value })}
+                />
               </div>
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase tracking-[.12em] text-slate-500">
+                  To
+                </label>
+                <input
+                  type="date"
+                  className={dateInputCls}
+                  value={to}
+                  onChange={(e) => setState({ to: e.target.value })}
+                />
+              </div>
+            </div>
+
+            {/* Middle: Status */}
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="text-sm font-semibold text-slate-900">Status</div>
+                {process.env.NODE_ENV === "development" && (
+                  <div className={`text-xs font-semibold px-2 py-1 rounded ${apiOnline ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                    API: {apiOnline ? "OK" : "OFFLINE"}
+                  </div>
+                )}
+              </div>
+              <div className="text-sm text-slate-700 whitespace-pre-wrap">{status || "—"}</div>
+              {process.env.NODE_ENV !== "production" && (
+                <div className="mt-2 text-xs text-slate-400 font-mono border-t border-slate-200 pt-2">
+                  API_BASE={API_BASE}
+                </div>
+              )}
+            </div>
+
+            {/* Right: Actions */}
+            <div className="flex flex-wrap items-end gap-3 justify-center">
+              <Link
+                href="/rules"
+                className={`${ui.btn} ${ui.btnGhost}`}
+              >
+                Rules
+              </Link>
               <button
                 className={`${ui.btn} ${ui.btnPrimary}`}
                 onClick={onRunMonthEnd}
                 disabled={!hasOrgId}
                 title={!hasOrgId ? "Select org first" : ""}
               >
-                Run Month-End
+                Review Month End
               </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Month-End Review (hero) */}
+        <section className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-6">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div>
+                <div className="text-xs font-extrabold uppercase tracking-[.18em] text-slate-500">Month-End Review</div>
+                <div className="mt-1 text-xl font-semibold text-slate-900">Run checks and review findings</div>
+              </div>
             </div>
 
             <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
@@ -1966,7 +1154,6 @@ export default function HomePage() {
               )}
             </div>
           </section>
-        </div>
       </main>
     </div>
   );

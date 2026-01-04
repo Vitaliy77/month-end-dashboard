@@ -1,11 +1,23 @@
 // api/src/routes.ts
 import { Router } from "express";
 import crypto from "node:crypto";
+import multer from "multer";
 import { q } from "./db.js";
 import { ENV } from "./env.js";
 import { buildAuthUrl, exchangeCodeForTokens, refreshAccessToken } from "./qboAuth.js";
 import { findNetIncome } from "./qbo/pnlParse.js";
 import { monthBuckets, priorDay, type MonthBucket } from "./monthBuckets.js";
+import { parseCSV } from "./recon/csvParser.js";
+import {
+  createStatement,
+  insertStatementLines,
+  listStatements,
+  getStatementWithCounts,
+  listStatementLines,
+  updateLineMatchStatus,
+  updateLineReceipt,
+} from "./recon/store.js";
+import { qboFetchForOrg } from "./lib/qboFetchForOrg.js";
 
 // === Rules system ===
 import { getRulesForOrg, saveRulesForOrg } from "./rulesStore.js";
@@ -363,6 +375,23 @@ routes.get("/qbo/pnl", async (req, res) => {
       end_date: to,
     });
 
+    // API-side sanity check for single-month endpoints
+    const columns = pnl?.Columns?.Column || [];
+    const columnTitles = columns.map((c: any) => c?.ColTitle || "").filter(Boolean);
+    const firstRow = pnl?.Rows?.Row?.[0];
+    const firstRowColDataLen = firstRow?.ColData?.length || 0;
+    
+    console.log("[SINGLE_PNL_API_CHECK]", {
+      orgId,
+      from,
+      to,
+      columnTitles,
+      columnCount: columns.length,
+      firstRowType: firstRow?.type,
+      firstRowColDataLen,
+      hasRows: !!pnl?.Rows?.Row?.length,
+    });
+
     return res.json({
       ok: true,
       orgId,
@@ -471,6 +500,23 @@ routes.get("/qbo/bs", async (req, res) => {
       end_date: to,
     });
 
+    // API-side sanity check for single-month endpoints
+    const columns = bs?.Columns?.Column || [];
+    const columnTitles = columns.map((c: any) => c?.ColTitle || "").filter(Boolean);
+    const firstRow = bs?.Rows?.Row?.[0];
+    const firstRowColDataLen = firstRow?.ColData?.length || 0;
+    
+    console.log("[SINGLE_BS_API_CHECK]", {
+      orgId,
+      from,
+      to,
+      columnTitles,
+      columnCount: columns.length,
+      firstRowType: firstRow?.type,
+      firstRowColDataLen,
+      hasRows: !!bs?.Rows?.Row?.length,
+    });
+
     return res.json({ ok: true, orgId, from, to, bs });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: e?.message || String(e) });
@@ -489,6 +535,23 @@ routes.get("/qbo/cf", async (req, res) => {
     const cf = await qboFetchJson(orgId, "/reports/CashFlow", {
       start_date: from,
       end_date: to,
+    });
+
+    // API-side sanity check for single-month endpoints
+    const columns = cf?.Columns?.Column || [];
+    const columnTitles = columns.map((c: any) => c?.ColTitle || "").filter(Boolean);
+    const firstRow = cf?.Rows?.Row?.[0];
+    const firstRowColDataLen = firstRow?.ColData?.length || 0;
+    
+    console.log("[SINGLE_CF_API_CHECK]", {
+      orgId,
+      from,
+      to,
+      columnTitles,
+      columnCount: columns.length,
+      firstRowType: firstRow?.type,
+      firstRowColDataLen,
+      hasRows: !!cf?.Rows?.Row?.length,
     });
 
     return res.json({ ok: true, orgId, from, to, cf });
@@ -914,10 +977,16 @@ routes.post("/orgs/:orgId/account-owners", async (req, res) => {
 function priorMonthRange(from: string, to: string) {
   const f = new Date(from + "T00:00:00Z");
   const t = new Date(to + "T00:00:00Z");
-  const pf = new Date(Date.UTC(f.getUTCFullYear(), f.getUTCMonth() - 1, f.getUTCDate()));
-  const pt = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - 1, t.getUTCDate()));
+
+  // prior month start = first day of previous month
+  const priorStart = new Date(Date.UTC(f.getUTCFullYear(), f.getUTCMonth() - 1, 1));
+
+  // prior month end = last day of previous month:
+  // day 0 of current month gives last day of previous month
+  const priorEnd = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), 0));
+
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  return { from: fmt(pf), to: fmt(pt) };
+  return { from: fmt(priorStart), to: fmt(priorEnd) };
 }
 
 routes.post("/runs/month-end/qbo", async (req, res) => {
@@ -925,8 +994,40 @@ routes.post("/runs/month-end/qbo", async (req, res) => {
     const orgId = String(req.body?.orgId || "");
     const from = String(req.body?.from || "");
     const to = String(req.body?.to || "");
+    const force = String(req.query?.force || "").toLowerCase() === "true";
+    
     if (!orgId || !from || !to) {
       return res.status(400).json({ ok: false, error: "Missing orgId/from/to" });
+    }
+
+    console.log("[MONTH_END_RUN]", { orgId, from, to, force, mode: force ? "RECOMPUTE" : "SAVED_OR_NEW" });
+
+    // If not forcing, check for saved run first
+    if (!force) {
+      const savedRun = await getRun(orgId, from, to);
+      if (savedRun) {
+        // Parse findings JSON
+        let findings: any[] = [];
+        try {
+          findings = JSON.parse(savedRun.findings_json);
+        } catch {
+          findings = [];
+        }
+
+        return res.json({
+          ok: true,
+          wasForced: false,
+          runId: savedRun.id,
+          orgId: savedRun.org_id,
+          from: savedRun.from_date,
+          to: savedRun.to_date,
+          netIncome: savedRun.net_income,
+          netIncomeValue: savedRun.net_income, // alias for frontend compatibility
+          findings,
+          ruleEngineVersion: savedRun.rule_engine_version,
+          createdAt: savedRun.created_at,
+        });
+      }
     }
 
     // Support custom rules passed in request body (for draft rules)
@@ -1009,6 +1110,7 @@ routes.post("/runs/month-end/qbo", async (req, res) => {
 
     return res.json({
       ok: true,
+      wasForced: force,
       runId,
       orgId,
       from,
@@ -1510,4 +1612,311 @@ function extractVendorNameForDiagnostics(accountName: string): string | null {
     if (match) return match[1].trim();
   }
   return null;
+}
+
+// ==================== Reconciliation Routes ====================
+
+// Configure multer for file uploads (memory storage for MVP)
+const upload = multer({ storage: multer.memoryStorage() });
+
+// POST /api/recon/statements/upload
+routes.post("/recon/statements/upload", upload.single("file"), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ ok: false, error: "No file uploaded" });
+    }
+
+    const orgId = String(req.body.orgId || "");
+    const kind = String(req.body.kind || "") as "bank" | "credit_card";
+    const periodFrom = String(req.body.periodFrom || "");
+    const periodTo = String(req.body.periodTo || "");
+    const accountName = String(req.body.accountName || "").trim() || undefined;
+    const accountLast4 = String(req.body.accountLast4 || "").trim() || undefined;
+
+    if (!orgId || !kind || !periodFrom || !periodTo) {
+      return res.status(400).json({ ok: false, error: "Missing required fields: orgId, kind, periodFrom, periodTo" });
+    }
+
+    if (kind !== "bank" && kind !== "credit_card") {
+      return res.status(400).json({ ok: false, error: "kind must be 'bank' or 'credit_card'" });
+    }
+
+    // Parse CSV
+    const csvContent = file.buffer.toString("utf-8");
+    const parsedLines = parseCSV(csvContent, kind);
+
+    if (parsedLines.length === 0) {
+      return res.status(400).json({ ok: false, error: "No valid lines found in CSV" });
+    }
+
+    // Create statement
+    const { statementId } = await createStatement(
+      orgId,
+      kind,
+      periodFrom,
+      periodTo,
+      file.originalname || "uploaded.csv",
+      accountName,
+      accountLast4
+    );
+
+    // Insert lines
+    const { linesInserted } = await insertStatementLines(statementId, parsedLines);
+
+    // Return sample lines (first 5)
+    const sampleLines = parsedLines.slice(0, 5).map((l) => ({
+      postedDate: l.postedDate,
+      description: l.description,
+      amount: l.amount,
+      hasReceipt: l.hasReceipt,
+    }));
+
+    return res.json({
+      ok: true,
+      statementId,
+      linesInserted,
+      sampleLines,
+    });
+  } catch (e: any) {
+    console.error("Upload error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// GET /api/recon/statements
+routes.get("/recon/statements", async (req, res) => {
+  try {
+    const orgId = String(req.query.orgId || "");
+    const kind = req.query.kind as "bank" | "credit_card" | undefined;
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
+
+    if (!orgId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId" });
+    }
+
+    const statements = await listStatements(orgId, kind, from, to);
+
+    // Get line counts for each statement
+    const statementsWithCounts = await Promise.all(
+      statements.map(async (stmt) => {
+        const lines = await listStatementLines(stmt.id);
+        return {
+          ...stmt,
+          lineCount: lines.length,
+        };
+      })
+    );
+
+    return res.json({ ok: true, statements: statementsWithCounts });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// GET /api/recon/lines
+routes.get("/recon/lines", async (req, res) => {
+  try {
+    const statementId = req.query.statementId as string | undefined;
+    const status = req.query.status as "unmatched" | "matched" | "ambiguous" | "ignored" | undefined;
+
+    const lines = await listStatementLines(statementId, status);
+
+    return res.json({ ok: true, lines });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// POST /api/recon/match/run
+routes.post("/recon/match/run", async (req, res) => {
+  try {
+    const orgId = String(req.body.orgId || "");
+    const kind = String(req.body.kind || "") as "bank" | "credit_card";
+    const periodFrom = String(req.body.periodFrom || "");
+    const periodTo = String(req.body.periodTo || "");
+    const statementId = req.body.statementId as string | undefined;
+
+    if (!orgId || !kind || !periodFrom || !periodTo) {
+      return res.status(400).json({ ok: false, error: "Missing required fields" });
+    }
+
+    // Get statement lines to match
+    const lines = await listStatementLines(statementId, "unmatched");
+
+    if (lines.length === 0) {
+      return res.json({ ok: true, matchedCount: 0, ambiguousCount: 0, unmatchedCount: 0 });
+    }
+
+    // Fetch QBO transactions for the period
+    // For MVP, we'll fetch from the TransactionList report
+    // In a real implementation, we'd fetch from specific accounts (bank/CC accounts)
+    const qboTransactions = await fetchQboTransactionsForPeriod(orgId, periodFrom, periodTo);
+
+    // Match lines to QBO transactions
+    let matchedCount = 0;
+    let ambiguousCount = 0;
+
+    for (const line of lines) {
+      const matches = findMatches(line, qboTransactions);
+
+      if (matches.length === 1 && matches[0].score >= 0.8) {
+        // High confidence single match
+        await updateLineMatchStatus(line.id, "matched", matches[0].qboTxnId, matches[0].score);
+        matchedCount++;
+      } else if (matches.length > 1 && matches[0].score >= 0.7) {
+        // Multiple candidates, mark as ambiguous
+        await updateLineMatchStatus(line.id, "ambiguous", undefined, matches[0].score);
+        ambiguousCount++;
+      }
+      // Otherwise, leave as unmatched
+    }
+
+    const unmatchedCount = lines.length - matchedCount - ambiguousCount;
+
+    return res.json({
+      ok: true,
+      matchedCount,
+      ambiguousCount,
+      unmatchedCount,
+    });
+  } catch (e: any) {
+    console.error("Match error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// POST /api/recon/lines/:id/ignore
+routes.post("/recon/lines/:id/ignore", async (req, res) => {
+  try {
+    const lineId = String(req.params.id);
+
+    await updateLineMatchStatus(lineId, "ignored");
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// POST /api/recon/lines/:id/attach-receipt
+routes.post("/recon/lines/:id/attach-receipt", async (req, res) => {
+  try {
+    const lineId = String(req.params.id);
+    const hasReceipt = Boolean(req.body.hasReceipt);
+    const receiptUrl = req.body.receiptUrl as string | undefined;
+
+    await updateLineReceipt(lineId, hasReceipt, receiptUrl);
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Helper: Fetch QBO transactions for matching
+async function fetchQboTransactionsForPeriod(orgId: string, from: string, to: string): Promise<any[]> {
+  try {
+    // Fetch TransactionList report (simplified for MVP)
+    const report = await qboFetchForOrg(orgId, "/reports/TransactionList", {
+      start_date: from,
+      end_date: to,
+      minorversion: "65",
+    });
+
+    // Extract transactions from report structure
+    const transactions: any[] = [];
+    if (report?.Rows?.Row) {
+      for (const row of report.Rows.Row) {
+        if (row.ColData && row.ColData.length >= 3) {
+          transactions.push({
+            date: row.ColData[0]?.value,
+            description: row.ColData[1]?.value || "",
+            amount: parseQboAmount(row.ColData[2]?.value),
+            id: row.id || crypto.randomUUID(),
+          });
+        }
+      }
+    }
+
+    return transactions;
+  } catch (e: any) {
+    console.warn("Failed to fetch QBO transactions:", e?.message);
+    return [];
+  }
+}
+
+function parseQboAmount(value: any): number | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const negByParens = /^\(.*\)$/.test(s);
+  const cleaned = s.replace(/[(),$]/g, "").replace(/,/g, "").trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? (negByParens ? -n : n) : null;
+}
+
+// Helper: Find matching QBO transactions for a statement line
+function findMatches(
+  line: { posted_date: string; amount: number; description: string },
+  qboTransactions: any[]
+): Array<{ qboTxnId: string; score: number }> {
+  const matches: Array<{ qboTxnId: string; score: number }> = [];
+
+  const lineDate = new Date(line.posted_date);
+  const lineAmount = Math.abs(line.amount);
+  const lineDesc = normalizeDescription(line.description);
+
+  for (const txn of qboTransactions) {
+    if (!txn.date || !txn.amount) continue;
+
+    const txnDate = new Date(txn.date);
+    const txnAmount = Math.abs(txn.amount);
+    const txnDesc = normalizeDescription(txn.description || "");
+
+    let score = 0;
+
+    // Amount match (exact = 0.5, within 1% = 0.4)
+    if (Math.abs(lineAmount - txnAmount) < 0.01) {
+      score += 0.5;
+    } else if (Math.abs(lineAmount - txnAmount) / lineAmount < 0.01) {
+      score += 0.4;
+    } else {
+      continue; // Amount must match reasonably
+    }
+
+    // Date match (within 3 days = 0.3, exact = 0.4)
+    const daysDiff = Math.abs((lineDate.getTime() - txnDate.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysDiff === 0) {
+      score += 0.4;
+    } else if (daysDiff <= 3) {
+      score += 0.3;
+    } else {
+      continue; // Date must be within 3 days
+    }
+
+    // Description similarity (simple contains check = 0.1)
+    if (lineDesc && txnDesc && (lineDesc.includes(txnDesc) || txnDesc.includes(lineDesc))) {
+      score += 0.1;
+    }
+
+    if (score >= 0.7) {
+      matches.push({ qboTxnId: txn.id, score });
+    }
+  }
+
+  // Sort by score descending
+  matches.sort((a, b) => b.score - a.score);
+
+  return matches;
+}
+
+function normalizeDescription(desc: string): string {
+  return desc
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }

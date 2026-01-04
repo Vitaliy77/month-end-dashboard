@@ -204,12 +204,26 @@ async function asJson<T = any>(resp: Response, requestUrl?: string): Promise<T> 
     );
   }
   
+  // Guard against extremely large responses that might indicate corruption
+  // Don't truncate (produces invalid JSON), instead fail with clear error
+  if (text && text.length > 1000000) {
+    const url = requestUrl || resp.url;
+    console.error(`[api] Response too large (${text.length} chars) for ${url}`);
+    throw new Error(
+      `API response too large (${text.length} chars). This may indicate corruption or an unexpected response format.\n` +
+      `Request URL: ${url}\n` +
+      `Status: ${resp.status} ${resp.statusText}`
+    );
+  }
+  
   try {
     json = text ? JSON.parse(text) : null;
   } catch (e) {
     // If parsing fails and it's not HTML, include the raw text
     if (!isHtml) {
-      json = { raw: text, parseError: String(e) };
+      // Log the error with context but don't throw for non-HTML responses
+      console.error(`[api] JSON parse error for ${requestUrl || resp.url}:`, e);
+      json = { raw: text?.substring(0, 500) || "", parseError: String(e) };
     } else {
       // Already handled HTML case above
       throw new Error(
@@ -259,12 +273,13 @@ export async function createOrg(args: { name: string }) {
   return result;
 }
 
-export async function listOrgs(): Promise<{ ok: boolean; orgs: Org[] }> {
+export async function listOrgs(): Promise<{ ok: boolean; count?: number; orgs: Org[] }> {
   const url = `${API_BASE}/orgs`;
-  const result = await safeFetch<{ ok: boolean; orgs: Org[] }>(url, { cache: "no-store" });
+  const result = await safeFetch<{ ok: boolean; count?: number; orgs: Org[] }>(url, { cache: "no-store" });
   if (!result || (result as any).ok === false) {
     return { ok: false, orgs: [] };
   }
+  // Return API response exactly as-is: { ok: true, count: X, orgs: [...] }
   return result;
 }
 
@@ -316,9 +331,14 @@ export async function runMonthEndQbo(args: {
   to: string;
   // Optional: run with draft rules (override) without persisting
   rules?: Rule[];
+  // Optional: force recomputation even if saved run exists
+  force?: boolean;
 }) {
-  const url = `${API_BASE}/runs/month-end/qbo`;
-  const result = await safeFetch(url, {
+  const url = new URL(`${API_BASE}/runs/month-end/qbo`);
+  if (args.force === true) {
+    url.searchParams.set("force", "true");
+  }
+  const result = await safeFetch(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
@@ -387,6 +407,15 @@ export async function loadBalanceSheet(orgId: string, from: string, to: string):
 export async function loadCashFlow(orgId: string, from: string, to: string): Promise<any> {
   const url = `${API_BASE}/qbo/cf?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
   const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
+}
+
+// ✅ NEW: GL Details (for Trial Balance export)
+export async function loadGlDetails(orgId: string, from: string, to: string): Promise<any> {
+  const url = `${API_BASE}/qbo/gl?orgId=${encodeURIComponent(orgId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  // Placeholder: if API endpoint doesn't exist, it might return 404 or empty.
+  // For now, just return the JSON. The UI will handle the "not available yet" message.
   return asJson(resp, url);
 }
 
@@ -647,6 +676,134 @@ export async function resetAccrualRulesToDefaults(
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify({ orgId }),
+  });
+  return asJson(resp, url);
+}
+
+// ==================== Reconciliation API ====================
+
+export type ReconStatement = {
+  id: string;
+  org_id: string;
+  kind: "bank" | "credit_card";
+  account_name?: string;
+  account_last4?: string;
+  period_from: string;
+  period_to: string;
+  currency: string;
+  source_filename: string;
+  uploaded_at: string;
+  lineCount?: number;
+};
+
+export type ReconStatementLine = {
+  id: string;
+  statement_id: string;
+  posted_date: string;
+  description: string;
+  amount: number;
+  unique_key: string;
+  match_status: "unmatched" | "matched" | "ambiguous" | "ignored";
+  matched_qbo_txn_id?: string;
+  match_score?: number;
+  has_receipt: boolean;
+  receipt_url?: string;
+  created_at: string;
+};
+
+export async function uploadReconStatement(
+  orgId: string,
+  kind: "bank" | "credit_card",
+  periodFrom: string,
+  periodTo: string,
+  file: File,
+  accountName?: string,
+  accountLast4?: string
+): Promise<{ ok: boolean; statementId: string; linesInserted: number; sampleLines: any[] }> {
+  const url = `${API_BASE}/recon/statements/upload`;
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("orgId", orgId);
+  formData.append("kind", kind);
+  formData.append("periodFrom", periodFrom);
+  formData.append("periodTo", periodTo);
+  if (accountName) formData.append("accountName", accountName);
+  if (accountLast4) formData.append("accountLast4", accountLast4);
+
+  const resp = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    body: formData,
+  });
+  return asJson(resp, url);
+}
+
+export async function listReconStatements(
+  orgId: string,
+  kind?: "bank" | "credit_card",
+  from?: string,
+  to?: string
+): Promise<{ ok: boolean; statements: ReconStatement[] }> {
+  const params = new URLSearchParams({ orgId });
+  if (kind) params.append("kind", kind);
+  if (from) params.append("from", from);
+  if (to) params.append("to", to);
+
+  const url = `${API_BASE}/recon/statements?${params}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
+}
+
+export async function listReconLines(
+  statementId?: string,
+  status?: "unmatched" | "matched" | "ambiguous" | "ignored"
+): Promise<{ ok: boolean; lines: ReconStatementLine[] }> {
+  const params = new URLSearchParams();
+  if (statementId) params.append("statementId", statementId);
+  if (status) params.append("status", status);
+
+  const url = `${API_BASE}/recon/lines?${params}`;
+  const resp = await fetch(url, { cache: "no-store" });
+  return asJson(resp, url);
+}
+
+export async function runReconMatch(
+  orgId: string,
+  kind: "bank" | "credit_card",
+  periodFrom: string,
+  periodTo: string,
+  statementId?: string
+): Promise<{ ok: boolean; matchedCount: number; ambiguousCount: number; unmatchedCount: number }> {
+  const url = `${API_BASE}/recon/match/run`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({ orgId, kind, periodFrom, periodTo, statementId }),
+  });
+  return asJson(resp, url);
+}
+
+export async function ignoreReconLine(lineId: string): Promise<{ ok: boolean }> {
+  const url = `${API_BASE}/recon/lines/${encodeURIComponent(lineId)}/ignore`;
+  const resp = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+  });
+  return asJson(resp, url);
+}
+
+export async function attachReceipt(
+  lineId: string,
+  hasReceipt: boolean,
+  receiptUrl?: string
+): Promise<{ ok: boolean }> {
+  const url = `${API_BASE}/recon/lines/${encodeURIComponent(lineId)}/attach-receipt`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({ hasReceipt, receiptUrl }),
   });
   return asJson(resp, url);
 }

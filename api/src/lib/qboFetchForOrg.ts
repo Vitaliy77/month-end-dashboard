@@ -46,12 +46,12 @@ export async function getValidQboConnection(orgId: string): Promise<QboConn> {
         expires_at = $3,
         refresh_expires_at = $4,
         updated_at = now()
-    where id = $5
+    where org_id = $5
     `,
-    [refreshed.access_token, newRefreshToken, newExpiresAtIso, newRefreshExpiresAtIso, c.id]
+    [refreshed.access_token, newRefreshToken, newExpiresAtIso, newRefreshExpiresAtIso, c.org_id]
   );
 
-  const rows2 = await q<QboConn>(`select * from qbo_connections where id = $1`, [c.id]);
+  const rows2 = await q<QboConn>(`select * from qbo_connections where org_id = $1`, [c.org_id]);
   const c2 = rows2[0];
   if (!c2) throw new Error("Failed to refresh QBO connection record");
   return c2;

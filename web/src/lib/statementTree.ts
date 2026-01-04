@@ -165,16 +165,31 @@ export function buildStatementTree(
         if (isLeafNode) {
           leafRows.set(key, row);
         }
-      } else if (isLeafNode) {
-        // Update existing leaf node with account ID if missing
-        const node = nodeMap.get(key)!;
-        if (!node.accountId && accountId) {
-          node.accountId = accountId;
+      } else {
+        // Node already exists - check if we need to convert it from leaf to group
+        const existingNode = nodeMap.get(key)!;
+        
+        if (isLeafNode) {
+          // This is a leaf node - update existing node if it's also a leaf, or upgrade if it was a group
+          if (!existingNode.accountId && accountId) {
+            existingNode.accountId = accountId;
+          }
+          if (!existingNode.data) {
+            existingNode.data = row;
+          }
+          leafRows.set(key, row);
+        } else {
+          // This should be a group node, but existing might be a leaf
+          // CRITICAL: Convert leaf to group if we're processing a child path
+          if (!existingNode.isGroup) {
+            // Convert existing leaf node to a group (it has children)
+            existingNode.isGroup = true;
+            existingNode.accountId = undefined; // Groups don't have account IDs
+            existingNode.data = undefined; // Groups don't store row data
+            // Remove from leafRows if it was there
+            leafRows.delete(key);
+          }
         }
-        if (!node.data) {
-          node.data = row;
-        }
-        leafRows.set(key, row);
       }
     }
   }

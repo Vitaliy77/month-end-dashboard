@@ -135,6 +135,63 @@ export async function initSchema() {
     `);
     await q(`CREATE INDEX IF NOT EXISTS idx_accrual_rules_org_id ON accrual_rules(org_id)`);
 
+    // === Reconciliation tables ===
+    // recon_statements: uploaded bank/CC statements
+    await q(`
+      CREATE TABLE IF NOT EXISTS recon_statements (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('bank', 'credit_card')),
+        account_name TEXT,
+        account_last4 TEXT,
+        period_from DATE NOT NULL,
+        period_to DATE NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        source_filename TEXT NOT NULL,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // recon_statement_lines: individual transactions from statements
+    await q(`
+      CREATE TABLE IF NOT EXISTS recon_statement_lines (
+        id TEXT PRIMARY KEY,
+        statement_id TEXT NOT NULL,
+        posted_date DATE NOT NULL,
+        description TEXT NOT NULL,
+        amount NUMERIC NOT NULL,
+        unique_key TEXT NOT NULL UNIQUE,
+        match_status TEXT NOT NULL DEFAULT 'unmatched' CHECK (match_status IN ('unmatched', 'matched', 'ambiguous', 'ignored')),
+        matched_qbo_txn_id TEXT,
+        match_score NUMERIC,
+        has_receipt BOOLEAN NOT NULL DEFAULT false,
+        receipt_url TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        FOREIGN KEY (statement_id) REFERENCES recon_statements(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Indexes for reconciliation tables
+    await q(`
+      CREATE INDEX IF NOT EXISTS idx_recon_statements_org_kind_period 
+      ON recon_statements(org_id, kind, period_from, period_to)
+    `);
+
+    await q(`
+      CREATE INDEX IF NOT EXISTS idx_recon_statement_lines_statement 
+      ON recon_statement_lines(statement_id)
+    `);
+
+    await q(`
+      CREATE INDEX IF NOT EXISTS idx_recon_statement_lines_match_status 
+      ON recon_statement_lines(match_status)
+    `);
+
+    await q(`
+      CREATE INDEX IF NOT EXISTS idx_recon_statement_lines_posted_date 
+      ON recon_statement_lines(posted_date)
+    `);
+
     console.log("Database schema initialized successfully");
   } catch (error: any) {
     // Check if error is due to table already existing (PostgreSQL specific)

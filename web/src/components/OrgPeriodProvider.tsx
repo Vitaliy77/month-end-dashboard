@@ -35,8 +35,21 @@ const OrgPeriodContext = createContext<Ctx | null>(null);
 function safeJsonParse<T>(s: string | null): T | null {
   if (!s) return null;
   try {
+    // Guard against extremely large strings that might indicate corruption
+    if (s.length > 100000) {
+      console.warn("[OrgPeriodProvider] localStorage value too large, clearing:", s.length);
+      if (typeof window !== "undefined") {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+      return null;
+    }
     return JSON.parse(s) as T;
-  } catch {
+  } catch (e) {
+    // If parsing fails, clear corrupted data
+    console.warn("[OrgPeriodProvider] Failed to parse localStorage, clearing:", e);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(STORAGE_KEY);
+    }
     return null;
   }
 }

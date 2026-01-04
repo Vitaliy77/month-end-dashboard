@@ -68,6 +68,46 @@ function flattenRows(
   return out;
 }
 
+// Helper to check if a row is a leaf (no children, has numeric amount, not a rollup/total)
+function isLeafRow(x: { path?: string[]; label?: string; row?: QboRow }): boolean {
+  const row = x.row;
+  if (!row) return false;
+  
+  // Must have no children (leaf node)
+  const hasChildren = row.Rows?.Row && row.Rows.Row.length > 0;
+  if (hasChildren) return false;
+  
+  // Must have a numeric amount
+  const amount = rowAmount(row);
+  if (amount === null || !Number.isFinite(amount)) return false;
+  
+  // Exclude rollup/total rows
+  const label = (x.label || "").trim();
+  const labelLower = label.toLowerCase();
+  
+  // Exclude labels starting with "Total"
+  if (labelLower.startsWith("total")) return false;
+  
+  // Exclude common QBO rollup labels
+  const rollupLabels = new Set([
+    "income",
+    "expenses",
+    "grossprofit",
+    "netincome",
+    "netoperatingincome",
+    "netotherincome",
+    "total income",
+    "total expenses",
+    "gross profit",
+    "net income",
+    "net operating income",
+    "net other income",
+  ]);
+  if (rollupLabels.has(labelLower)) return false;
+  
+  return true;
+}
+
 // Small stable hash (for deterministic finding ids)
 function hashString(s: string): string {
   let h = 2166136261;
@@ -454,13 +494,28 @@ export function evaluateRules(args: {
       const direction = String(rule.params?.direction || "any").toLowerCase();
 
       // Account selector
+      // If selector is missing/undefined/empty after trim, treat as "match all" (global rule)
       const accountSelector = rule.params?.account_selector || {};
-      const accountNumber = accountSelector.account_number
+      const accountNumberRaw = accountSelector.account_number
         ? String(accountSelector.account_number).trim()
-        : null;
-      const accountNameContains = accountSelector.account_name_contains
-        ? norm(String(accountSelector.account_name_contains))
-        : null;
+        : "";
+      const accountNumber = accountNumberRaw ? accountNumberRaw : null;
+      const accountNameContainsRaw = accountSelector.account_name_contains
+        ? String(accountSelector.account_name_contains).trim()
+        : "";
+      
+      // Helper to check if selector means "match all"
+      function isMatchAllSelector(sel: unknown): boolean {
+        if (sel == null) return true;
+        const s = String(sel).trim().toLowerCase();
+        if (s === "" || s === "*") return true;
+        if (s.includes("match") && s.includes("all")) return true; // handles '{ match: "all" }'
+        return false;
+      }
+      
+      const accountNameContains = isMatchAllSelector(accountNameContainsRaw) 
+        ? null 
+        : (accountNameContainsRaw ? norm(accountNameContainsRaw) : null);
 
       console.log(`[variance_debug] Rule ${ruleId} config:`, {
         accountNumber,
@@ -481,40 +536,69 @@ export function evaluateRules(args: {
       const pnlRowsPrior: QboRow[] = pnlPrior?.Rows?.Row || [];
       const flatPrior = flattenRows(pnlRowsPrior);
 
+      // For variance rules, filter to leaf rows only (exclude rollups/totals)
+      const flatLeaf = flat.filter(isLeafRow);
+      const flatPriorLeaf = flatPrior.filter(isLeafRow);
+
+      console.log("[LEAF_FILTER_COUNTS]", {
+        flat: flat.length,
+        flatLeaf: flatLeaf.length,
+        flatPrior: flatPrior.length,
+        flatPriorLeaf: flatPriorLeaf.length,
+      });
+
       console.log(`[variance_debug] Rule ${ruleId} data counts:`, {
         currentFlatCount: flat.length,
+        currentLeafCount: flatLeaf.length,
         priorFlatCount: flatPrior.length,
+        priorLeafCount: flatPriorLeaf.length,
       });
 
       // Match accounts based on selector
-      const currentMatches = flat.filter(({ path, label, row }) => {
-        if (accountNumber) {
-          // Match by account number (if available in row data)
-          const rowId = row.ColData?.[0]?.id || "";
-          if (rowId && rowId.includes(accountNumber)) return true;
-        }
-        if (accountNameContains) {
-          const joined = norm(path.join(" / "));
-          const lbl = norm(label);
-          if (joined.includes(accountNameContains) || lbl.includes(accountNameContains)) return true;
-        }
-        // If no selector, match all (not recommended but allowed)
-        if (!accountNumber && !accountNameContains) return true;
-        return false;
-      });
-
-      const priorMatches = flatPrior.filter(({ path, label, row }) => {
-        if (accountNumber) {
-          const rowId = row.ColData?.[0]?.id || "";
-          if (rowId && rowId.includes(accountNumber)) return true;
-        }
-        if (accountNameContains) {
-          const joined = norm(path.join(" / "));
-          const lbl = norm(label);
-          if (joined.includes(accountNameContains) || lbl.includes(accountNameContains)) return true;
-        }
-        if (!accountNumber && !accountNameContains) return true;
-        return false;
+      // If isMatchAllSelector AND no accountNumber → match all LEAF rows (don't filter by name)
+      // Else → filter by substring on path OR label (case-insensitive)
+      let currentMatches: typeof flat;
+      let priorMatches: typeof flatPrior;
+      
+      if (isMatchAllSelector(accountNameContainsRaw) && !accountNumber) {
+        // Global rule: use all LEAF accounts only (exclude rollups/totals)
+        currentMatches = flatLeaf;
+        priorMatches = flatPriorLeaf;
+        
+        // Log sample matches for global rules
+        console.log("[LEAF_SAMPLE_MATCHES]", currentMatches.slice(0, 5).map(x => ({
+          label: x.label,
+          path: (x.path || []).join(" / "),
+          amt: rowAmount(x.row),
+        })));
+      } else {
+        // Specific selector: filter accounts (flatLeaf already contains only leaf rows)
+        const matchFn = (x: { path?: string[]; label?: string; row?: any }) => {
+          if (accountNumber) {
+            // Match by account number (if available in row data)
+            const rowId = x.row?.ColData?.[0]?.id || "";
+            if (rowId && rowId.includes(accountNumber)) return true;
+          }
+          if (accountNameContains) {
+            // Case-insensitive substring match against account path and label
+            const pathStr = (x.path || []).join(" / ").toLowerCase();
+            const labelStr = (x.label || "").toLowerCase();
+            if (pathStr.includes(accountNameContains.toLowerCase()) || labelStr.includes(accountNameContains.toLowerCase())) return true;
+          }
+          return false;
+        };
+        
+        currentMatches = flatLeaf.filter(matchFn);
+        priorMatches = flatPriorLeaf.filter(matchFn);
+      }
+      
+      // Temporary log after selector filtering
+      console.log("[RULE_MATCH_SUMMARY]", {
+        ruleId,
+        selector: accountNameContainsRaw,
+        isMatchAll: isMatchAllSelector(accountNameContainsRaw),
+        currentMatchesCount: currentMatches.length,
+        priorMatchesCount: priorMatches.length,
       });
 
       console.log(`[variance_debug] Rule ${ruleId} matched account details:`, {
@@ -582,40 +666,56 @@ export function evaluateRules(args: {
       let triggered = false;
       let thresholdReason = "";
 
-      const absTestPassed = Number.isFinite(absThreshold) && absDelta >= absThreshold;
-      const pctTestPassed =
-        Number.isFinite(pctThreshold) &&
-        pctDelta !== null &&
-        absPrior >= minBaseAmount &&
-        pctDelta >= pctThreshold;
-
-      console.log(`[variance_debug] Rule ${ruleId} threshold tests:`, {
-        absThreshold: Number.isFinite(absThreshold) ? absThreshold : null,
-        absDelta,
-        absTestPassed,
-        pctThreshold: Number.isFinite(pctThreshold) ? pctThreshold : null,
-        pctDelta: pctDelta !== null ? pctDelta : null,
-        absPrior,
-        minBaseAmount,
-        pctTestPassed,
-        absPriorMeetsMinBase: absPrior >= minBaseAmount,
-      });
-
-      if (absTestPassed) {
-        triggered = true;
-        thresholdReason = `Absolute threshold: ${absDelta.toFixed(2)} >= ${absThreshold}`;
+      // Fix prior=0 handling:
+      // - If prior === 0 AND current === 0: do not trigger
+      // - If prior === 0 AND current !== 0: trigger ONLY if absThreshold is set AND abs(delta) >= absThreshold
+      // - If absThreshold is missing/undefined and prior=0, do NOT trigger
+      if (absPrior === 0 && Math.abs(currentTotal) === 0) {
+        // Both are zero: do not trigger
+        console.log(`[variance_debug] Rule ${ruleId} skipped: both prior and current are 0`);
+        continue;
       }
 
-      if (pctTestPassed) {
-        triggered = true;
-        if (thresholdReason) thresholdReason += " OR ";
-        thresholdReason += `Percent threshold: ${(pctDelta! * 100).toFixed(1)}% >= ${(pctThreshold * 100).toFixed(1)}%`;
-      }
+      if (absPrior === 0 && Math.abs(currentTotal) !== 0) {
+        // Prior is 0 but current is not: only check absolute threshold if set
+        if (Number.isFinite(absThreshold) && absDelta >= absThreshold) {
+          triggered = true;
+          thresholdReason = `Absolute threshold (prior=0): ${absDelta.toFixed(2)} >= ${absThreshold}`;
+        } else {
+          console.log(`[variance_debug] Rule ${ruleId} skipped: prior=0 but absThreshold not set or not met`);
+          continue;
+        }
+      } else {
+        // Normal case: prior !== 0
+        const absTestPassed = Number.isFinite(absThreshold) && absDelta >= absThreshold;
+        const pctTestPassed =
+          Number.isFinite(pctThreshold) &&
+          pctDelta !== null &&
+          absPrior >= minBaseAmount &&
+          pctDelta >= pctThreshold;
 
-      // Special case: prior = 0, only check absolute threshold
-      if (absPrior === 0 && Number.isFinite(absThreshold) && absDelta >= absThreshold) {
-        triggered = true;
-        thresholdReason = `Absolute threshold (prior=0): ${absDelta.toFixed(2)} >= ${absThreshold}`;
+        console.log(`[variance_debug] Rule ${ruleId} threshold tests:`, {
+          absThreshold: Number.isFinite(absThreshold) ? absThreshold : null,
+          absDelta,
+          absTestPassed,
+          pctThreshold: Number.isFinite(pctThreshold) ? pctThreshold : null,
+          pctDelta: pctDelta !== null ? pctDelta : null,
+          absPrior,
+          minBaseAmount,
+          pctTestPassed,
+          absPriorMeetsMinBase: absPrior >= minBaseAmount,
+        });
+
+        if (absTestPassed) {
+          triggered = true;
+          thresholdReason = `Absolute threshold: ${absDelta.toFixed(2)} >= ${absThreshold}`;
+        }
+
+        if (pctTestPassed) {
+          triggered = true;
+          if (thresholdReason) thresholdReason += " OR ";
+          thresholdReason += `Percent threshold: ${(pctDelta! * 100).toFixed(1)}% >= ${(pctThreshold * 100).toFixed(1)}%`;
+        }
       }
 
       console.log(`[variance_debug] Rule ${ruleId} final result:`, {
@@ -664,6 +764,12 @@ export function evaluateRules(args: {
         // Sort by absolute delta descending, take top 10
         matchedLines.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
         const topMatchedLines = matchedLines.slice(0, 10);
+
+        // Do NOT emit findings when nothing matched
+        if (topMatchedLines.length === 0) {
+          console.log(`[variance_debug] Rule ${ruleId} skipped: no matched lines (matchedLines.length === 0)`);
+          continue;
+        }
 
         const evidence = {
           current_value: currentTotal,

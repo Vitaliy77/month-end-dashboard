@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import React from "react";
 
-import { OrgPeriodProvider } from "@/components/OrgPeriodProvider";
-import TopBar from "@/components/TopBar";
+import Providers from "./providers";
+import { AppShell } from "@/components/AppShell";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,10 +34,9 @@ export default function RootLayout({
 
         {/* Suspense boundary required because OrgPeriodProvider uses useSearchParams() */}
         <Suspense fallback={<div className="p-6">Loading…</div>}>
-          <OrgPeriodProvider>
-            <TopBar />
-            {children}
-          </OrgPeriodProvider>
+          <Providers>
+            <AppShell>{children}</AppShell>
+          </Providers>
         </Suspense>
       </body>
     </html>

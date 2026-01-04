@@ -14,7 +14,7 @@ type ReportHeaderProps = {
 
 export function ReportHeader({ title, orgLine, controls, statusText, debugText }: ReportHeaderProps) {
   return (
-    <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-4">
+    <div className="rounded-3xl border border-slate-200 bg-white/80 shadow-md backdrop-blur p-3.5">
       {/* Row A: Title + Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xl font-semibold tracking-tight text-slate-900">{title} Report</div>
