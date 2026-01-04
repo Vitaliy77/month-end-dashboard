@@ -1147,7 +1147,7 @@ import {
   resetAccrualRulesToDefaults,
   type AccrualRule,
 } from "./accruals/rulesStore.js";
-import { qboFetchForOrg } from "./lib/qboFetchForOrg.js";
+// qboFetchForOrg already imported at top of file
 
 // Helper function for dry-run (needs to be accessible)
 async function findOrCreateAccrualLiabilityAccount(orgId: string): Promise<string> {
