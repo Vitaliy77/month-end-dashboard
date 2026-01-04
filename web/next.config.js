@@ -11,6 +11,14 @@ const nextConfig = {
   
   // Force Webpack by not enabling experimental.turbopack
   // Turbopack is only enabled via --turbo flag or NEXT_DISABLE_TURBOPACK=0
+  
+  // Clear corrupted build cache on startup if needed
+  onDemandEntries: {
+    // Period in ms to keep pages in the buffer
+    maxInactiveAge: 25 * 1000,
+    // Number of pages that should be kept simultaneously without being disposed
+    pagesBufferLength: 2,
+  },
 };
 
 module.exports = nextConfig;
