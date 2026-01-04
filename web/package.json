@@ -6,27 +6,26 @@
     "npm": "10.x"
   },
   "scripts": {
-    "dev": "next dev -p 3010",
-    "dev:turbo": "HOST=0.0.0.0 next dev -p 3010 --turbo",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --webpack -p 3011",
     "build": "rm -rf .next && next build",
-    "build:ensure": "rm -rf .next && (next build && node -e \"process.exit(require('fs').existsSync('.next/server/pages-manifest.json')?0:1)\" || (echo 'Retrying with --debug...' && next build --debug))",
-    "start": "node -e \"const fs=require('fs'); if(!fs.existsSync('.next/server/pages-manifest.json')){console.error('Missing .next/server/pages-manifest.json. Build incomplete.'); process.exit(1);} console.log('Build OK');\" && next start -p 3010",
-    "test:e2e": "playwright test"
+    "start": "next start -p 3011",
+    "build:ensure": "rm -rf .next && (next build && node -e \"process.exit(require(\\\"fs\\\").existsSync(\\\".next/server/pages-manifest.json\\\")?0:1)\" || (echo \"Retrying with --debug...\" && next build --debug))"
   },
   "dependencies": {
     "next": "16.1.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "scheduler": "^0.27.0"
+    "scheduler": "^0.27.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@playwright/test": "^1.57.0",
     "@types/node": "25.0.3",
-    "@types/react": "19.2.7",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/xlsx": "^0.0.35",
     "autoprefixer": "^10.4.19",
-    "playwright": "^1.57.0",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.17",
-    "typescript": "5.9.3"
+    "typescript": "^5.9.3"
   }
 }
