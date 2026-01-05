@@ -8,6 +8,7 @@ const nextConfig = {
   // Ensure server output (not static export)
   // output: undefined means default server mode (not "export")
   // This allows next start to work properly
+  output: "standalone",
   
   // Force Webpack by not enabling experimental.turbopack
   // Turbopack is only enabled via --turbo flag or NEXT_DISABLE_TURBOPACK=0
