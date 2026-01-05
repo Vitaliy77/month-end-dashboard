@@ -1,0 +1,8 @@
+{
+  "name": "month-end-checker-web",
+  "private": true,
+  "scripts": {
+    "dev": "NEXT_TELEMETRY_DISABLED=1 npx next dev -p 3011 --webpack"
+  }
+}
+
