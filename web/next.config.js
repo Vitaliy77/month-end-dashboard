@@ -1,10 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    turbo: {
-      root: __dirname,
-    },
-  },
   // DO deploy unblocks: don't fail the build on TS errors
   typescript: {
     ignoreBuildErrors: true,
