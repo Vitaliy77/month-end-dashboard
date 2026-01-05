@@ -95,6 +95,12 @@ function firstCell(r: RowNode): ColData {
   return (cd?.[0] ?? {}) as ColData;
 }
 
+function priorDay(dateISO: string): string {
+  const d = new Date(dateISO + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().split("T")[0];
+}
+
 type BalanceSheetViewProps = {
   compact?: boolean;
 };

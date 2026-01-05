@@ -9,6 +9,7 @@ An improved version of the Month-End Checker application for reviewing QuickBook
 - Month-end financial checks and rule evaluation
 - Custom rule configuration
 - P&L, Balance Sheet, Trial Balance, and Cash Flow report views
+- **Accruals Detection & Management**: Automatically detect recurring expenses missing in current period and post accrual journal entries to QBO
 
 ## Architecture
 
@@ -36,21 +37,29 @@ npm run dev
 ```
 
 This will start:
-- API server on `http://localhost:8081`
-- Web app on `http://localhost:3010`
+- API server on `http://localhost:8080` (or port 8081 if PORT not set)
+- Web app on `http://localhost:3010` (or port 3011 if 3010 is in use)
+
+**For local development:**
+- API: `cd api && PORT=8080 npm run dev`
+- Web: `cd web && npm run dev` (defaults to port 3000, use `-p 3011` to override)
 
 ### Verify Setup
 
 ```bash
 # Check API health
-curl -i http://localhost:8081/api/health
+curl -i http://127.0.0.1:8080/api/health
 
 # Check API orgs endpoint
-curl -i http://localhost:8081/api/orgs
+curl -i http://127.0.0.1:8080/api/orgs
 
 # Check web server
 curl -I http://localhost:3010
 ```
+
+**Environment Configuration:**
+- `web/.env.local` should contain: `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8080`
+- This ensures the web app can reach the API server
 
 Or run the diagnostic script:
 ```bash
@@ -87,7 +96,7 @@ cp api/.env.example api/.env
 **Web (`web/.env.local`):**
 ```bash
 cp web/.env.example web/.env.local
-# web/.env.local should work as-is (points to http://localhost:8081/api)
+# web/.env.local should work as-is (points to http://localhost:8080/api)
 ```
 
 ### 3. Start Services
