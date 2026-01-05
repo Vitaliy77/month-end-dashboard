@@ -61,3 +61,9 @@ coverage/
 node_modules/
 web/node_modules 2/
 api/.env
+
+package-lock.json
+package-lock*.json
+api/build/
+web-expenses/
+
