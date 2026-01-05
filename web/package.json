@@ -9,7 +9,7 @@
     "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --webpack -p 3011",
     "build": "rm -rf .next && next build",
     "start": "node .next/standalone/server.js",
-    "build:ensure": "rm -rf .next && (next build && node -e \"process.exit(require(\\\"fs\\\").existsSync(\\\".next/server/pages-manifest.json\\\")?0:1)\" || (echo \"Retrying with --debug...\" && next build --debug))"
+    "build:ensure": "rm -rf .next && next build && node -e \"process.exit(require('fs').existsSync('.next/standalone/server.js')?0:1)\""
   },
   "dependencies": {
     "next": "16.1.0",
