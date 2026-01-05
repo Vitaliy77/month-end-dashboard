@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --webpack -p 3011",
     "build": "rm -rf .next && next build",
-    "start": "npx next start -p $PORT -H 0.0.0.0",
+    "start": "next start -p $PORT -H 0.0.0.0",
     "build:ensure": "rm -rf .next && (next build && node -e \"process.exit(require(\\\"fs\\\").existsSync(\\\".next/server/pages-manifest.json\\\")?0:1)\" || (echo \"Retrying with --debug...\" && next build --debug))"
   },
   "dependencies": {
